@@ -81,7 +81,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .doc_only()
         .params("interactive: sketch the path, then a profile across each end; Finish blends them along the path"),
     CommandSpec::new("form.void.extrusion", "Void Extrusion", void_extrusion)
-        .icon("cut")
+        .icon("hole")
         .noundo()
         .doc_only()
         .params("interactive: as form.extrusion, cutting"),

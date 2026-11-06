@@ -121,6 +121,8 @@ pub struct State {
     /// Finishing or cancelling a form's sketch ourselves: the Finish hook lets it through.
     leaving: bool,
     fill: Option<Fill>,
+    /// Clear the selection next frame (what the click that set the work plane selected).
+    clear_selection: bool,
 }
 
 const XY: &str = "XY";
@@ -320,7 +322,7 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     let _ = app.session.execute("select.clear", &json!({}));
     app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None });
     let plane = app.forms.work_plane.clone().unwrap_or_else(|| Sel::Plane { name: XY.into() });
-    let opened = crate::dialogs::start_sketch(app, &plane).or_else(|why| {
+    let opened = open_on(app, &plane).or_else(|why| {
         if app.forms.work_plane.is_some() {
             // The face the work plane was on is gone (the model changed): back to XY.
             app.forms.work_plane = None;
@@ -336,7 +338,7 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
         status(app, format!("{}: {why}", form.label(void)), true);
         return;
     }
-    opened_sketch(app);
+    opened_sketch(app, true);
     let hint = match form {
         Form::Extrusion => "draw one or more closed loops (a loop inside another makes a hole), then Finish",
         Form::Blend => "draw the base loop, then Finish; the top loop comes next",
@@ -349,10 +351,28 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     status(app, text, false);
 }
 
+/// Open the form's first sketch on the work plane `sel`. On a face, the face's edges are not
+/// projected into it: only what is drawn is the user's.
+fn open_on(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
+    let Sel::Face { point, .. } = sel else { return crate::dialogs::start_sketch(app, sel) };
+    let plane = crate::sketch_attachment_ui::face_plane(app, sel).ok_or("the face no longer exists")?;
+    let params = json!({"plane": plane, "activate_part": app.preferences.sketch_face_activates_part, "project_edges": false});
+    let before = app.settled_cam();
+    app.run("sketch.create", params).map_err(|e| crate::friendly_error("sketch.create", &e))?;
+    if app.look_at_opened_sketch(before)
+        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
+    {
+        // Look at the picked point, not the face plane's origin (a corner of the face).
+        to.target = *point;
+        app.animate_to(to);
+    }
+    Ok(())
+}
+
 /// A sketch of the form opened: it faces the view (whatever Preferences say about opening
 /// sketches), joins the session, and the Line tool starts.
-fn opened_sketch(app: &mut SolveApp) {
-    if !app.preferences.sketch_open_look_at {
+fn opened_sketch(app: &mut SolveApp, look: bool) {
+    if look && !app.preferences.sketch_open_look_at {
         crate::dialogs::look_at_sketch(app);
     }
     if let (Some(id), Some(s)) = (app.session.active_sketch, app.forms.session.as_mut()) {
@@ -367,13 +387,38 @@ fn plane_json(p: &Plane) -> Value {
     json!({"origin": v(p.origin), "x_dir": v(p.x), "y_dir": v(p.y)})
 }
 
-/// Open the form's next sketch on `params` (`sketch.create`'s).
-fn open_next(app: &mut SolveApp, params: Value) -> Result<(), String> {
+/// Open the form's next sketch on `params` (`sketch.create`'s), the view centred on `focus` (the
+/// base loop over a Blend's top, the path's end for a profile), so what came before shows.
+fn open_next(app: &mut SolveApp, params: Value, focus: Option<Vec3>) -> Result<(), String> {
     let before = app.settled_cam();
     app.run("sketch.create", params).map_err(|e| crate::friendly_error("sketch.create", &e))?;
-    app.look_at_opened_sketch(before);
-    opened_sketch(app);
+    let turned = app.look_at_opened_sketch(before) || {
+        crate::dialogs::look_at_sketch(app);
+        true
+    };
+    if turned
+        && let Some(at) = focus
+        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
+    {
+        to.target = at;
+        app.animate_to(to);
+    }
+    opened_sketch(app, false);
     Ok(())
+}
+
+/// The middle of what is drawn in sketch `sketch`, in the world.
+fn drawn_centre(app: &SolveApp, sketch: u64) -> Option<Vec3> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let ss = st.sketch(sketch)?;
+    let (mut sum, mut n) = (Vec2::ZERO, 0.0);
+    for i in drawn_curves(ss) {
+        for p in ss.sketch.polyline(i) {
+            sum = sum + p;
+            n += 1.0;
+        }
+    }
+    (n > 0.0).then(|| ss.plane.to_world(sum * (1.0 / n)))
 }
 
 // ---- Finishing --------------------------------------------------------------------------
@@ -602,7 +647,8 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             app.forms.session = Some(session);
             // The top: on the plane parallel to the base, `depth` along its normal.
             let top = base.offset(depth);
-            open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"})).inspect_err(|_| abort(app, true))?;
+            let focus = drawn_centre(app, active).map(|c| c + base.normal() * depth);
+            open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus).inspect_err(|_| abort(app, true))?;
             status(app, format!("Blend: draw the top loop ({depth} mm above the base), then Finish"), false);
         }
         (Form::Blend, _) => {
@@ -621,7 +667,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             session.path = Some(path);
             leave(app, "sketch.finish");
             app.forms.session = Some(session.clone());
-            open_next(app, json!({"plane": plane_json(&start), "name": "Profile"})).inspect_err(|_| abort(app, true))?;
+            open_next(app, json!({"plane": plane_json(&start), "name": "Profile"}), Some(start.origin)).inspect_err(|_| abort(app, true))?;
             let what = if session.form == Form::Sweep { "the profile" } else { "the first profile" };
             status(app, format!("{}: draw {what} (a closed loop across the path's start), then Finish", session.form.label(session.void)), false);
         }
@@ -638,7 +684,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             let end = session.path.as_ref().map(|p| p.end).ok_or("the path is gone")?;
             leave(app, "sketch.finish");
             app.forms.session = Some(session.clone());
-            open_next(app, json!({"plane": plane_json(&end), "name": "Profile 2"})).inspect_err(|_| abort(app, true))?;
+            open_next(app, json!({"plane": plane_json(&end), "name": "Profile 2"}), Some(end.origin)).inspect_err(|_| abort(app, true))?;
             status(app, format!("{}: draw the second profile (across the path's end), then Finish", session.form.label(session.void)), false);
         }
         (Form::SweptBlend, _) => {
@@ -717,15 +763,42 @@ fn apply_fill(app: &mut SolveApp) -> bool {
 /// Once a frame: Set Work Plane's pick, the feature window waiting to be filled, and a form
 /// whose sketch was closed some other way (undo, another document).
 pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
+    if std::mem::take(&mut app.forms.clear_selection) {
+        let _ = app.session.execute("select.clear", &json!({}));
+    }
     if app.forms.picking_work_plane {
+        let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || app.session.active_sketch.is_some() || app.dialog.is_some() {
             app.forms.picking_work_plane = false;
             status(app, "Set Work Plane cancelled", false);
+        } else if let Some(pos) = click
+            && let Some(rect) = app.viewport.rect.filter(|r| r.contains(pos))
+        {
+            // What is under the click, whatever the selection filter would make of it (a click
+            // on a face selects its body by default).
+            let proj = crate::viewport::projection(app, rect);
+            let hits = crate::viewport::pick(app, &proj, pos);
+            let found = hits.iter().find_map(|h| match h {
+                crate::viewport::Hit::Plane { name, .. } => Some(Sel::Plane { name: name.clone() }),
+                crate::viewport::Hit::Face { body, index, point } => {
+                    Some(Sel::Face { body: body.clone(), index: *index, point: *point }).filter(|s| plane_pick(app, s))
+                }
+                _ => None,
+            });
+            match found {
+                Some(sel) => {
+                    adopt_work_plane(app, sel);
+                    // The viewport selects what was clicked later this frame.
+                    app.forms.clear_selection = true;
+                }
+                None if hits.iter().any(|h| matches!(h, crate::viewport::Hit::Face { .. })) => {
+                    status(app, "Set Work Plane: that face is not flat; pick a plane or a flat face", true);
+                }
+                None => {}
+            }
         } else if let Some(sel) = app.session.selection.iter().find(|s| plane_pick(app, s)).cloned() {
+            // A plane picked in the browser.
             adopt_work_plane(app, sel);
-        } else if !app.session.selection.is_empty() {
-            let _ = app.session.execute("select.clear", &json!({}));
-            status(app, "Set Work Plane: that is not flat; pick a plane or a flat face", true);
         }
     }
     if let Some(mut fill) = app.forms.fill.clone() {
