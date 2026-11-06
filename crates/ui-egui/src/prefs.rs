@@ -605,8 +605,9 @@ pub const SUPERSAMPLING: [f32; 3] = [1.0, 1.5, 2.0];
 #[serde(rename_all = "snake_case")]
 pub enum NavigatorStyle {
     /// Also what a navigator this version doesn't know reads as (`lenient`).
-    #[default]
     Axes,
+    /// The default: a cube with named faces; faces, edges and corners turn the view.
+    #[default]
     Cube,
     /// A body of the user's choice, drawn the cube's size ([`crate::view_gizmo`]); the cube
     /// until one is chosen.

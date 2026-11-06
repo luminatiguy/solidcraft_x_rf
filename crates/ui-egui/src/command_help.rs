@@ -379,7 +379,7 @@ mod tests {
         let mut ids = BTreeSet::new();
         for section in crate::workspace::SECTIONS {
             if let Some((commands, _)) = crate::workspace::layout(section.tab, section.panel, &specs) {
-                ids.extend(commands.iter().filter(|c| c.planned.is_none() && !crate::workspace::AGENT_ONLY.contains(&c.id)).map(|c| c.id));
+                ids.extend(commands.iter().filter(|c| c.planned.is_none() && !crate::workspace::hidden(c.id)).map(|c| c.id));
             }
         }
         ids

@@ -10,7 +10,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::render::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
-use solidcraft_engine::view::{GridFade, GridPlane, colors, grid_ext, grid_lines, grid_plane, grid_step, sketch_lines_with_sampler};
+use solidcraft_engine::view::{GridFade, GridPlane, colors, grid_ext, grid_plane, grid_step, sketch_lines_with_sampler};
 use std::hash::{Hash, Hasher};
 
 use crate::gpu::{Frame, GpuScene, GpuTarget, SceneSlot, ViewportCallback};
@@ -645,6 +645,8 @@ fn sketch_scene_key(app: &SolveApp, proj: &Proj) -> u64 {
     // on or off redraws even while the camera holds still.
     app.ui.show_grid.hash(&mut h);
     app.preferences.grid_follows_view.hash(&mut h);
+    app.cad.settings.grid_step.to_bits().hash(&mut h);
+    app.cam.aligned_standard_view(1e-4).map(|v| v as u8).hash(&mut h);
     // Finished sketches are drawn over the bodies when the preference says so.
     app.preferences.reference_geometry_through_bodies.hash(&mut h);
     app.preferences.sketch_halo.hash(&mut h);
@@ -1520,9 +1522,13 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
         2 => (false, true),
         _ => (true, true),
     };
+    // Hidden line: the faces hide what is behind them in the background colour (unlit, see
+    // `analysis_uniform`); the edges are drawn as in wireframe.
+    let hidden_line = app.ui.visual_style == 4;
+    let paper = tk.viewport_top.lerp_to_gamma(tk.viewport_bottom, 0.5);
     // Sketch mode shows the model in halftone: faded faces and edges (`forms::halftone`).
     let halftone = crate::forms::halftone(app);
-    let edge_col = match (shaded, halftone) {
+    let edge_col = match (shaded && !hidden_line, halftone) {
         (true, false) => c4(tk.body_edge),
         (true, true) => c4(tk.body_edge.gamma_multiply(0.3)),
         (false, false) => c4(tk.text),
@@ -1602,7 +1608,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
                 sc.line(a.to_f32(), c.to_f32(), slots.edge, 0.85, false);
             }
         }
-        let base = resolved.component.or(resolved.body).unwrap_or(tk.body);
+        let base = if hidden_line { paper } else { resolved.component.or(resolved.body).unwrap_or(tk.body) };
         let col = if faded { c4(base.gamma_multiply(0.35)) } else { c4(base) };
         set_palette_color(&mut arena, &mut sc.palette, slots.body, col);
         // Appearances: the body's opacity, and faces with looks of their own.
@@ -1612,7 +1618,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
         let mut face_colors = Vec::with_capacity(faces);
         let mut face_classes = Vec::with_capacity(faces);
         for f in 0..faces {
-            let look = face_looks.get(&f);
+            let look = face_looks.get(&f).filter(|_| !hidden_line);
             let color = look.map_or(base, |l| Color32::from_rgb(l.color[0], l.color[1], l.color[2]));
             let opacity = look.map_or(opacity, |l| l.opacity);
             let (rgba, class) = if faded {
@@ -1844,7 +1850,10 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
         .or_else(|| crate::forms::shown_work_plane(app));
     // An open sketch has its grid whatever the Grid switch says, unless the sketch's own Sketch
     // Grid option (Sketch panel) is off (#9147); outside a sketch that option is never off.
-    if (sketch_plane.is_some() || app.ui.show_grid) && !active_view(app).hide_grid {
+    // The grid shows while a sketch is open, and in the two-axis views (Top, Front, Right…), on
+    // the plane they look at; in other views it is hidden.
+    let axis_view = app.cam.aligned_standard_view(1e-4).is_some_and(|v| v != solidcraft_engine::render::StandardView::Iso);
+    if (sketch_plane.is_some() || (app.ui.show_grid && axis_view)) && !active_view(app).hide_grid {
         let major = grid_step(app.cam.half_height()).1;
         // An open sketch has its grid on its own plane, and so does the plane Create Sketch
         // would take; otherwise the ground plane: XY with Z up, XZ with Y up (laid out in the
@@ -1864,7 +1873,7 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
             let tf = app.cam.to_frame(app.cam.target);
             // On the ground (XY) unless the Grid follows the view preference is on (#1470); then on
             // the plane the last frame drew, so the choice is hysteretic near the thresholds (#1993).
-            let (u, v) = if app.preferences.grid_follows_view {
+            let (u, v) = if app.preferences.grid_follows_view || axis_view {
                 app.viewport.grid_plane.lock().map_or((Vec3::X, Vec3::Y), |mut last| {
                     *last = grid_plane(app.cam.to_frame(app.cam.back()), *last);
                     last.axes()
@@ -1901,15 +1910,24 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
         let origin = sketch_plane.as_ref().map_or(Vec3::ZERO, |pl| pl.origin);
         let (at_u, at_v) = ((c - origin).dot(u), (c - origin).dot(v));
         // Two lines through the point `c + u * t`: one along v, one along u.
+        // Lines at the grid step set for the sketch tools (`cad::Settings::grid_step`), or at ten,
+        // a hundred… times it when they would be closer than 8 points on screen; every tenth
+        // line is a major one.
+        let px_per_unit = f64::from(proj.rect.height()) / (2.0 * app.cam.half_height()).max(1e-12);
+        let mut step = app.cad.settings.grid_step.max(1e-6);
+        while step * px_per_unit < 8.0 && step < 1e9 {
+            step *= 10.0;
+        }
         for (along, across, at) in [(v, u, at_u), (u, v, at_v)] {
-            for line in grid_lines(app.cam.half_height(), at, fade.end, 300) {
-                let t = line.offset;
-                // A line two levels share with different kinds blends between the minor and
-                // the major look.
-                let col = grid_blend(grid, grid_major, line.major);
-                let wd = 0.7 + 0.3 * line.major;
+            let reach = fade.end;
+            let (n0, n1) = (((at - reach) / step).ceil() as i64, ((at + reach) / step).floor() as i64);
+            for n in n0..=n1.min(n0 + 600) {
+                let t = n as f64 * step - at;
+                let major = if n.rem_euclid(10) == 0 { 1.0 } else { 0.0 };
+                let col = grid_blend(grid, grid_major, major);
+                let wd = 0.7 + 0.3 * major;
                 for (s0, s1, alpha) in fade.pieces(t) {
-                    let col = sc.color(grid_colour(col, alpha * line.weight));
+                    let col = sc.color(grid_colour(col, alpha));
                     sc.under_line(w3(c + across * t + along * s0), w3(c + across * t + along * s1), col, wd);
                 }
             }
@@ -3247,6 +3265,10 @@ fn bounds_of(app: &SolveApp, items: impl Iterator<Item = Sel>) -> Option<solidcr
 /// The section as the shader's clip plane (normal, d), zero when there is none.
 /// The surface analysis for the shader (see `gpu::Frame::analysis`).
 fn analysis_uniform(app: &SolveApp) -> [f32; 8] {
+    // Hidden line: faces in the background colour, unlit, so only the edges show (mode 10).
+    if app.ui.visual_style == 4 && app.session.analysis.is_none() {
+        return [10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    }
     solidcraft_gpu::view::analysis_uniform(app.session.analysis.map(|a| a.mode()), crate::access::map(app).as_ref())
 }
 
@@ -5079,7 +5101,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             && app.session.active_sketch.is_none()
             && let Some(Hit::Face { body, .. }) = app.viewport.hover.clone()
         {
-            crate::edit_in_place::double_click_face(app, &body);
+            // An object made from a sketch opens that sketch; a component is edited in place.
+            if !crate::objects::edit_object(app, &body) {
+                crate::edit_in_place::double_click_face(app, &body);
+            }
         }
         // A right-click, unless the same press opened the mouse gestures' ring. egui's click
         // already allows the pointer a few points of travel, as a mouse moves while it is clicked.

@@ -345,6 +345,25 @@ fn snapshot(name: &str, mesh: &Mesh, colour: Option<[u8; 3]>, faces: &BTreeMap<u
 /// The menu a right-click on the view navigator opens: Axes, Cube and Custom, the current one
 /// marked. Custom opens the Custom View Navigator panel, which sets it on OK.
 pub(crate) fn menu_items(app: &SolveApp) -> Vec<Item> {
+    let mut orient = act("ui.orientView", "Orient to a view", "camera");
+    orient.children = [
+        ("view.top", "Top"),
+        ("view.bottom", "Bottom"),
+        ("view.front", "Front"),
+        ("view.back", "Back"),
+        ("view.left", "Left"),
+        ("view.right", "Right"),
+        ("view.isometric", "Home (isometric)"),
+    ]
+    .into_iter()
+    .map(|(id, label)| crate::context_menu::cmd(app, id, label))
+    .collect();
+    let mut out = vec![orient, act("ui.orientPlane", "Orient to a plane", "plane"), Item::sep()];
+    out.extend(navigator_styles(app));
+    out
+}
+
+fn navigator_styles(app: &SolveApp) -> Vec<Item> {
     NavigatorStyle::ALL
         .into_iter()
         .map(|style| {

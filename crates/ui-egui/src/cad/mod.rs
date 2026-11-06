@@ -5,8 +5,8 @@
 //! the buttons of the prompt bar at the bottom of the view. The geometry is made with the
 //! sketch's own commands, without constraints: the sketch is plain geometry, as a drawing is.
 
-pub mod geo;
 mod draw;
+pub mod geo;
 mod modify;
 pub mod snap;
 
@@ -66,7 +66,10 @@ impl Prompt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Input {
     /// A point (snapped), with the sketch curve under the cursor, if any.
-    Point { p: Vec2, curve: Option<String> },
+    Point {
+        p: Vec2,
+        curve: Option<String>,
+    },
     Number(f64),
     Keyword(&'static str),
     Enter,
@@ -146,7 +149,6 @@ pub struct State {
 fn make(id: &str) -> Option<Box<dyn Machine>> {
     draw::make(id).or_else(|| modify::make(id))
 }
-
 
 // ---- Starting and ending ------------------------------------------------------------------
 
@@ -514,7 +516,11 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
                     let crossing = b.x < a.x;
                     let s: Vec<Pos2> = quad.iter().filter_map(|p| to(*p)).collect();
                     if s.len() == 5 {
-                        let fill = if crossing { Color32::from_rgba_unmultiplied(60, 200, 90, 40) } else { Color32::from_rgba_unmultiplied(60, 120, 230, 40) };
+                        let fill = if crossing {
+                            Color32::from_rgba_unmultiplied(60, 200, 90, 40)
+                        } else {
+                            Color32::from_rgba_unmultiplied(60, 120, 230, 40)
+                        };
                         painter.add(egui::Shape::convex_polygon(s[..4].to_vec(), fill, Stroke::NONE));
                         if crossing {
                             dashed(painter, &s, Stroke::new(1.0, t.text));
@@ -577,16 +583,18 @@ pub fn run(app: &mut SolveApp, cmd: &str, params: Value) -> Result<Value, String
 
 /// The curves a command's reply says it made.
 pub fn made(v: &Value) -> Vec<String> {
-    v.get("created").and_then(|c| c.get("curves")).and_then(Value::as_array).map_or_else(Vec::new, |a| {
-        a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
-    })
+    v.get("created")
+        .and_then(|c| c.get("curves"))
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
 }
 
 /// The points a command's reply says it made.
 pub fn made_points(v: &Value) -> Vec<String> {
-    v.get("created").and_then(|c| c.get("points")).and_then(Value::as_array).map_or_else(Vec::new, |a| {
-        a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
-    })
+    v.get("created")
+        .and_then(|c| c.get("points"))
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
 }
 
 /// A plain line from `a` to `b`; the curve made.
@@ -654,7 +662,8 @@ impl Picker {
                     for e in ents(app) {
                         let pts = e.shape.polyline();
                         let take = if crossing {
-                            pts.iter().any(inside) || pts.windows(2).any(|w| box_edges(lo, hi).iter().any(|(c, d)| geo::seg_cross(w[0], w[1], *c, *d).is_some()))
+                            pts.iter().any(inside)
+                                || pts.windows(2).any(|w| box_edges(lo, hi).iter().any(|(c, d)| geo::seg_cross(w[0], w[1], *c, *d).is_some()))
                         } else {
                             pts.iter().all(inside)
                         };
@@ -689,8 +698,6 @@ fn box_edges(lo: Vec2, hi: Vec2) -> [(Vec2, Vec2); 4] {
     let (a, b, c, d) = (lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y));
     [(a, b), (b, c), (c, d), (d, a)]
 }
-
-
 
 #[cfg(test)]
 mod tests;

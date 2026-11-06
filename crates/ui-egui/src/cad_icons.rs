@@ -8,7 +8,6 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke, pos2};
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     New,
@@ -1146,7 +1145,6 @@ fn paint_constraints(pen: &Pen<'_>, icon: Icon, b: Color32, a: Color32, dim: boo
         _ => {}
     }
 }
-
 
 /// The icon a `cad:<name>` icon name stands for (the sketch tools' ribbon icons).
 pub fn by_name(name: &str) -> Option<Icon> {

@@ -54,7 +54,42 @@ fn model_line(_: &mut Session, _: &Value) -> Result<Value> {
     interactive("model.line", "sketch.create and sketch.line")
 }
 
+fn objects(_: &mut Session, _: &Value) -> Result<Value> {
+    interactive("obj", "solid.move, solid.mirror or solid.combine")
+}
+
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("obj.move", "Move", objects)
+        .icon("cad:move")
+        .noundo()
+        .doc_only()
+        .params("interactive: pick objects, a start point and an end point"),
+    CommandSpec::new("obj.copy", "Copy", objects)
+        .icon("cad:copy")
+        .noundo()
+        .doc_only()
+        .params("interactive: as Move, keeping the objects where they were"),
+    CommandSpec::new("obj.rotate", "Rotate", objects)
+        .icon("cad:rotate")
+        .noundo()
+        .doc_only()
+        .params("interactive: pick objects, an axis and an angle"),
+    CommandSpec::new("obj.mirror", "Mirror", objects)
+        .icon("cad:mirror")
+        .noundo()
+        .doc_only()
+        .params("interactive: pick objects and a mirror plane or face"),
+    CommandSpec::new("obj.join", "Join", objects)
+        .icon("cad:join")
+        .noundo()
+        .doc_only()
+        .params("interactive: join objects into one (objects stay separate until joined)"),
+    CommandSpec::new("obj.unjoin", "Unjoin", objects)
+        .icon("cad:explode")
+        .noundo()
+        .doc_only()
+        .params("interactive: pick a joined object: its last join is undone"),
+    CommandSpec::new("obj.cut", "Cut", objects).icon("cad:trim").noundo().doc_only().params("interactive: cut an object with others (they stay)"),
     CommandSpec::new("form.extrusion", "Extrusion", extrusion)
         .icon("extrude")
         .noundo()

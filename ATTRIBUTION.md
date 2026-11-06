@@ -808,6 +808,9 @@ Original SolidCraft drawings, Open for owner review; no runtime assignments.
 | crates/ui-egui/src/lib.rs (screenshot queue, synthetic input) | CADCraft `crates/ui-egui/src/lib.rs` | MIT OR Apache-2.0 |
 | crates/ui-egui/src/control.rs (method dispatch and screenshot saving) | CADCraft `crates/ui-egui/src/control.rs` | MIT OR Apache-2.0 |
 | crates/ui-egui/src/gpu.rs (paint-callback structure) | CADCraft `crates/ui-egui/src/gpu.rs` | MIT OR Apache-2.0 |
+| crates/ui-egui/src/cad_icons.rs | CADCraft `crates/ui-egui/src/icons.rs` (tool icons drawn in code) | MIT OR Apache-2.0 |
+| crates/ui-egui/src/cad/ (prompt machines, object snaps, typed input) | CADCraft `crates/engine/src/cmd/*` interactive commands and `crates/ui-egui` snapping | MIT OR Apache-2.0 |
+| crates/io/src/dwg_out.rs (DXF to DWG fix-ups) | CADCraft `crates/dwg/src/lib.rs` | MIT OR Apache-2.0 |
 | crates/mcp/src/server.rs, crates/mcp/src/backend.rs (JSON-RPC framing, MCP lifecycle, control-port bridge) | CADCraft `crates/mcp/src/{server,backend}.rs` | MIT OR Apache-2.0 |
 | crates/mcp/src/tools.rs (tool schema helpers and argument checking) | CADCraft `crates/mcp/src/tools.rs`, GridCraft `crates/mcp/src/tools.rs` | MIT OR Apache-2.0 |
 | crates/io/src/threemf.rs (bounded zip part reading and writing) | GridCraft `crates/xlsx/src/package.rs` | MIT OR Apache-2.0 |

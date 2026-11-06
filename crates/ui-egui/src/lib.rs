@@ -14,13 +14,13 @@ pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
 pub mod bidi;
-mod cad;
-mod cad_icons;
 pub mod blur;
 pub mod bom_panel;
 pub mod browser;
 pub mod browser_canvas;
 pub mod browser_prompts;
+mod cad;
+mod cad_icons;
 pub mod canvas;
 pub mod cli_link;
 #[cfg(test)]
@@ -62,6 +62,7 @@ mod dimension_create_ui_tests;
 pub mod documents;
 pub mod drag_extrude;
 pub mod drag_snap;
+mod drawing_ws;
 pub mod easyprint_ui;
 pub mod edit_clipboard;
 pub mod edit_in_place;
@@ -172,14 +173,15 @@ mod extrude_auto_to_object_tests;
 mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
+mod file_picker;
 mod forms;
 #[cfg(test)]
 mod forms_tests;
-mod file_picker;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
 mod move_preview;
+mod objects;
 pub use file_picker::FilePickerFuture;
 #[cfg(test)]
 mod blend_arrow_tests;
@@ -428,7 +430,7 @@ impl Default for UiState {
             palette_open: false,
             dark: true,
             pick_off: Vec::new(),
-            pick_bodies: false,
+            pick_bodies: true,
             pick_components: false,
             lasso_select: false,
             visual_style: 0,
@@ -627,6 +629,7 @@ pub struct SolveApp {
     pub(crate) forms: forms::State,
     /// The sketch tools after CADCraft's: the one running and the snap switches (`cad`).
     pub(crate) cad: cad::State,
+    pub(crate) drawing_ws: drawing_ws::State,
     /// The ribbon tab before the current `start` moved it to the command's home tab. A command
     /// that starts nothing (refused with a parameter or status error) puts it back (#10540).
     pub(crate) command_tab_before_start: Option<String>,
@@ -872,6 +875,7 @@ impl SolveApp {
             start_after_roll: None,
             forms: forms::State::default(),
             cad: cad::State::default(),
+            drawing_ws: drawing_ws::State::default(),
             command_tab_before_start: None,
             timeline_playback: None,
             delete_check: None,
@@ -1060,7 +1064,7 @@ impl SolveApp {
             "tool_cursor": self.ui.tool_cursor,
             "perspective": self.ui.perspective,
             "auto_ortho_faces": self.ui.auto_ortho_faces,
-            "pick_bodies": self.ui.pick_bodies,
+            "pick_whole_objects": self.ui.pick_bodies,
             "auto_project": self.session.auto_project,
             "visual_style": self.ui.visual_style,
             "browser_collapsed": self.tree.collapsed,
@@ -1120,7 +1124,8 @@ impl SolveApp {
         if let Some(a) = flag("auto_ortho_faces") {
             self.ui.auto_ortho_faces = a;
         }
-        if let Some(b) = flag("pick_bodies") {
+        // Whole objects by default: an older saved `pick_bodies` (faces) is not read.
+        if let Some(b) = flag("pick_whole_objects") {
             self.ui.pick_bodies = b;
         }
         if let Some(a) = flag("auto_project") {
@@ -1130,7 +1135,7 @@ impl SolveApp {
             self.autosave_minutes = m.clamp(0.0, 600.0);
         }
         if let Some(s) = v.get("visual_style").and_then(Value::as_u64) {
-            self.ui.visual_style = u8::try_from(s.min(3)).unwrap_or(0);
+            self.ui.visual_style = u8::try_from(s.min(4)).unwrap_or(0);
         }
         // Browser folders the user opened or closed.
         let keys = |k: &str| -> std::collections::BTreeSet<String> {
@@ -1633,7 +1638,7 @@ impl SolveApp {
             return;
         }
         // The MODEL tab's form tools, the work plane and Model Line (`forms.rs`).
-        if forms::start_hook(self, id) || cad::start_hook(self, id) {
+        if forms::start_hook(self, id) || cad::start_hook(self, id) || objects::start_hook(self, id) {
             return;
         }
         if id != "occurrence.move" {
@@ -3291,7 +3296,9 @@ impl SolveApp {
     }
 
     fn show_workspace(&mut self, ui: &mut egui::Ui) {
-        if render_workspace::active(self) {
+        if drawing_ws::active(self) {
+            drawing_ws::show(self, ui);
+        } else if render_workspace::active(self) {
             render_workspace::show(self, ui);
         } else {
             viewport::show(self, ui);

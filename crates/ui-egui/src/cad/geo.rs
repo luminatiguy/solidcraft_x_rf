@@ -12,7 +12,12 @@ use std::f64::consts::TAU;
 pub enum Shape {
     Line(Vec2, Vec2),
     /// Counter-clockwise from `a0` to `a1` (radians; `a1 > a0`).
-    Arc { c: Vec2, r: f64, a0: f64, a1: f64 },
+    Arc {
+        c: Vec2,
+        r: f64,
+        a0: f64,
+        a1: f64,
+    },
     Circle(Vec2, f64),
     /// Anything else (ellipse, spline, conic): its polyline.
     Poly(Vec<Vec2>),

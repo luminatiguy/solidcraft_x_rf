@@ -381,110 +381,122 @@ pub fn radial_items(app: &SolveApp) -> Vec<Item> {
 
 /// The list of a menu (under the ring for the viewport).
 pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
-    let mut v = match target {
-        Target::Viewport => viewport_items(app),
-        Target::Body { name } if crate::render_workspace::active(app) => vec![
-            cmd(app, "select.set", "Select").with(json!({"items":[Sel::Body {name:name.clone()}]})),
-            cmd(app, "select.same_look", "Select Same Look").with(json!({"body":name})),
-            Item::sep(),
-            act("ui.isolate", "Isolate", "body").with(json!({"bodies":[name]})),
-            act(if app.session.visibility.hidden_bodies.contains(name) { "ui.show" } else { "ui.hide" }, "Show/Hide", "eye")
-                .with(json!({"bodies":[name]})),
-        ],
-        Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
-        Target::Sketch { id } => sketch_items(app, *id),
-        Target::Feature { id } => feature_items(app, *id),
-        Target::Plane { id } => plane_items(app, *id),
-        Target::OriginPlane { name } => origin_plane_items(app, name),
-        Target::OriginAxis { name } => origin_axis_items(app, name),
-        Target::Component { id } => component_items(app, *id),
-        Target::Occurrence { path } => occurrence_items(app, path),
-        Target::Group { id, scope } => crate::browser::group_items(app, *id, scope),
-        Target::Folder { component, folder, scope } => crate::browser::folder_items(app, *component, folder, scope),
-        Target::Canvas { id } => crate::browser::canvas_items(app, *id),
-        Target::PointCloud { id } => crate::browser::point_cloud_items(app, *id),
-        Target::Origin => crate::browser::origin_items(app),
-        Target::NamedViews => vec![act("ui.newView", "New Named View", "perspective")],
-        Target::ViewGizmo => crate::view_gizmo::menu_items(app),
-        Target::Section => crate::browser::section_items(app),
-        Target::Joint { id } => joint_items(app, *id),
-        Target::ToolbarCommand { id } => crate::toolbar_custom::command_items(app, id),
-        Target::Toolbar => crate::toolbar_custom::toolbar_items(app),
-        Target::HistoryControls => crate::timeline::transport_items(app),
-        Target::Workspace => {
-            let rendering = crate::render_workspace::active(app);
-            let mut v = vec![
-                act("ui.workspace.design", "Design", "ws_design").with(json!({"workspace":"design"})).key(if rendering { "" } else { "current" }),
-                act("ui.workspace.render", "Render", "ws_render")
-                    .with(json!({"workspace":"render"}))
-                    .key(if rendering { "current" } else { "" })
-                    .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
-            ];
-            for (w, icon) in [("Animation", "ws_animate"), ("Simulation", ""), ("Manufacture", ""), ("Drawing", "ws_drawing")] {
-                v.push(act("ui.workspace", w, icon).key("coming later").on(false));
-            }
-            v
-        }
-        Target::Units => crate::prefs::UNITS
-            .iter()
-            .map(|u| {
-                let item = cmd(app, "document.units", u).with(json!({ "units": u }));
-                if app.session.doc.units == *u { item.key("current") } else { item }
-            })
-            .collect(),
-        Target::Navigation => crate::prefs::NAV_PRESETS
-            .iter()
-            .map(|preset| {
-                let item = act("ui.navPreset", preset.translated_label(), "").with(json!({ "preset": preset.id }));
-                if app.preferences.nav == preset.id { item.key("current") } else { item }
-            })
-            .collect(),
-        Target::NamedView { name } => crate::browser::view_items(app, name),
-        Target::InsertDesign => insert_design_items(app),
-        Target::EditSketch => {
-            let items: Vec<Item> = app
-                .session
-                .doc
-                .features
-                .iter()
-                .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
-                .map(|f| act("ui.editSketch", &f.name, "sketch").with(json!({"sketch": f.id})))
-                .collect();
-            if items.is_empty() { vec![act("ui.editSketch", app.tr("ui.edit_sketch_empty"), "sketch").on(false)] } else { items }
-        }
-        Target::VisualStyle => crate::navigation_bar::VISUAL_STYLES
-            .iter()
-            .enumerate()
-            .map(|(index, (style, label))| {
-                let current = usize::from(app.ui.visual_style) == index;
-                let mut item = cmd(app, "view.visual_style", label).with(json!({"style": style})).key(if current { "current" } else { "" });
-                item.icon = crate::navigation_bar::visual_style_icon(u8::try_from(index).unwrap_or_default()).into();
-                item
-            })
-            .collect(),
-        Target::ViewTool => {
-            let latched = match app.viewport.nav {
-                Some(crate::viewport::NavMode::Orbit) => "orbit",
-                Some(crate::viewport::NavMode::Pan) => "pan",
-                Some(crate::viewport::NavMode::Zoom) => "zoom",
-                None => "",
-            };
-            [("orbit", "Orbit"), ("pan", "Pan"), ("zoom", "Zoom")]
-                .into_iter()
-                .map(|(tool, label)| {
-                    let current = latched == tool;
-                    // Picking the latched tool again releases it, as its navigation-bar button does.
-                    let mut item = cmd(app, "view.tool", label).with(json!({"tool": if current { "none" } else { tool }})).key(if current {
-                        "current"
-                    } else {
+    let mut v =
+        match target {
+            Target::Viewport => viewport_items(app),
+            Target::Body { name } if crate::render_workspace::active(app) => vec![
+                cmd(app, "select.set", "Select").with(json!({"items":[Sel::Body {name:name.clone()}]})),
+                cmd(app, "select.same_look", "Select Same Look").with(json!({"body":name})),
+                Item::sep(),
+                act("ui.isolate", "Isolate", "body").with(json!({"bodies":[name]})),
+                act(if app.session.visibility.hidden_bodies.contains(name) { "ui.show" } else { "ui.hide" }, "Show/Hide", "eye")
+                    .with(json!({"bodies":[name]})),
+            ],
+            Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
+            Target::Sketch { id } => sketch_items(app, *id),
+            Target::Feature { id } => feature_items(app, *id),
+            Target::Plane { id } => plane_items(app, *id),
+            Target::OriginPlane { name } => origin_plane_items(app, name),
+            Target::OriginAxis { name } => origin_axis_items(app, name),
+            Target::Component { id } => component_items(app, *id),
+            Target::Occurrence { path } => occurrence_items(app, path),
+            Target::Group { id, scope } => crate::browser::group_items(app, *id, scope),
+            Target::Folder { component, folder, scope } => crate::browser::folder_items(app, *component, folder, scope),
+            Target::Canvas { id } => crate::browser::canvas_items(app, *id),
+            Target::PointCloud { id } => crate::browser::point_cloud_items(app, *id),
+            Target::Origin => crate::browser::origin_items(app),
+            Target::NamedViews => vec![act("ui.newView", "New Named View", "perspective")],
+            Target::ViewGizmo => crate::view_gizmo::menu_items(app),
+            Target::Section => crate::browser::section_items(app),
+            Target::Joint { id } => joint_items(app, *id),
+            Target::ToolbarCommand { id } => crate::toolbar_custom::command_items(app, id),
+            Target::Toolbar => crate::toolbar_custom::toolbar_items(app),
+            Target::HistoryControls => crate::timeline::transport_items(app),
+            Target::Workspace => {
+                let rendering = crate::render_workspace::active(app);
+                let drawing = crate::drawing_ws::active(app);
+                let mut v = vec![
+                    act("ui.workspace.design", "Design", "ws_design").with(json!({"workspace":"design"})).key(if rendering || drawing {
                         ""
-                    });
-                    item.icon = tool.into();
+                    } else {
+                        "current"
+                    }),
+                    act("ui.workspace.render", "Render", "ws_render")
+                        .with(json!({"workspace":"render"}))
+                        .key(if rendering { "current" } else { "" })
+                        .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
+                ];
+                for (w, icon) in [("Animation", "ws_animate"), ("Simulation", ""), ("Manufacture", "")] {
+                    v.push(act("ui.workspace", w, icon).key("coming later").on(false));
+                }
+                v.push(
+                    act("ui.workspace", "Drawing", "ws_drawing")
+                        .with(json!({"workspace":"drawing"}))
+                        .key(if drawing { "current" } else { "" })
+                        .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none()),
+                );
+                v
+            }
+            Target::Units => crate::prefs::UNITS
+                .iter()
+                .map(|u| {
+                    let item = cmd(app, "document.units", u).with(json!({ "units": u }));
+                    if app.session.doc.units == *u { item.key("current") } else { item }
+                })
+                .collect(),
+            Target::Navigation => crate::prefs::NAV_PRESETS
+                .iter()
+                .map(|preset| {
+                    let item = act("ui.navPreset", preset.translated_label(), "").with(json!({ "preset": preset.id }));
+                    if app.preferences.nav == preset.id { item.key("current") } else { item }
+                })
+                .collect(),
+            Target::NamedView { name } => crate::browser::view_items(app, name),
+            Target::InsertDesign => insert_design_items(app),
+            Target::EditSketch => {
+                let items: Vec<Item> = app
+                    .session
+                    .doc
+                    .features
+                    .iter()
+                    .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
+                    .map(|f| act("ui.editSketch", &f.name, "sketch").with(json!({"sketch": f.id})))
+                    .collect();
+                if items.is_empty() { vec![act("ui.editSketch", app.tr("ui.edit_sketch_empty"), "sketch").on(false)] } else { items }
+            }
+            Target::VisualStyle => crate::navigation_bar::VISUAL_STYLES
+                .iter()
+                .enumerate()
+                .map(|(index, (style, label))| {
+                    let current = usize::from(app.ui.visual_style) == index;
+                    let mut item = cmd(app, "view.visual_style", label).with(json!({"style": style})).key(if current { "current" } else { "" });
+                    item.icon = crate::navigation_bar::visual_style_icon(u8::try_from(index).unwrap_or_default()).into();
                     item
                 })
-                .collect()
-        }
-    };
+                .collect(),
+            Target::ViewTool => {
+                let latched = match app.viewport.nav {
+                    Some(crate::viewport::NavMode::Orbit) => "orbit",
+                    Some(crate::viewport::NavMode::Pan) => "pan",
+                    Some(crate::viewport::NavMode::Zoom) => "zoom",
+                    None => "",
+                };
+                [("orbit", "Orbit"), ("pan", "Pan"), ("zoom", "Zoom")]
+                    .into_iter()
+                    .map(|(tool, label)| {
+                        let current = latched == tool;
+                        // Picking the latched tool again releases it, as its navigation-bar button does.
+                        let mut item = cmd(app, "view.tool", label).with(json!({"tool": if current { "none" } else { tool }})).key(if current {
+                            "current"
+                        } else {
+                            ""
+                        });
+                        item.icon = tool.into();
+                        item
+                    })
+                    .collect()
+            }
+        };
     if !crate::render_workspace::active(app) {
         v.extend(crate::browser::folded_folder_items(app, target));
     }
@@ -1708,6 +1720,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.toolbarTab" | "ui.shortcutPin" => {
             crate::toolbar_custom::run(app, &item.id, &p)
         }
+        "ui.orientPlane" => crate::forms::start_orient_plane(app),
         "ui.navigatorStyle" => {
             if let Some(style) = p.get("style").and_then(|s| serde_json::from_value(s.clone()).ok()) {
                 crate::view_gizmo::pick_style(app, style);
@@ -1726,10 +1739,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.historyShowHidden" => app.tree.history_show_hidden = p["show"].as_bool().unwrap_or(false),
         "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" => {
-            if let Some(workspace) = p.get("workspace").and_then(Value::as_str)
-                && let Err(e) = crate::render_workspace::enter(app, workspace == "render")
-            {
-                app.set_status(e, true);
+            if let Some(workspace) = p.get("workspace").and_then(Value::as_str) {
+                if let Err(e) = crate::render_workspace::enter(app, workspace == "render") {
+                    app.set_status(e, true);
+                }
+                crate::drawing_ws::set_open(app, workspace == "drawing");
             }
         }
         "ui.findJoint" => {

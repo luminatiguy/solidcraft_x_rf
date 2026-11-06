@@ -45,6 +45,9 @@ rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 # The computer's name for a design's lock file (src/design_lock.rs; the browser keeps no lock files).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 gethostname = { workspace = true }
+# DWG output for the Drawing workspace (src/dwg_out.rs). MPL-2.0, used unmodified as a dependency,
+# the same version as CADCraft's DWG bridge.
+acadrust = "=0.6.6"
 
 [dev-dependencies]
 solidcraft-testkit = { workspace = true }

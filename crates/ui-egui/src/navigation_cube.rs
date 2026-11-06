@@ -113,8 +113,9 @@ fn facets(cam: &Camera, c: Pos2, half: f64) -> Vec<Facet> {
         let bands = [(-1.0, -INSET, -1.0), (-INSET, INSET, 0.0), (INSET, 1.0, 1.0)];
         for (x0, x1, sx) in bands {
             for (y0, y1, sy) in bands {
+                // Corners and the middles of edges turn the view to that corner or edge.
                 add(
-                    if sx != 0.0 && sy != 0.0 { n + r * sx + u * sy } else { n },
+                    if sx != 0.0 || sy != 0.0 { n + r * sx + u * sy } else { n },
                     n,
                     [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].into_iter().map(|(x, y)| n + r * x + u * y).collect(),
                     if sx == 0.0 && sy == 0.0 { Some((r, u)) } else { None },
@@ -267,6 +268,13 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
             ));
         if ui.input(|i| i.pointer.primary_clicked()) {
             navigate(app, None, Some(face.direction));
+        }
+        // A right-click on the cube: orient to one of its faces, or to a plane of the model.
+        if ui.input(|i| i.pointer.secondary_clicked())
+            && app.dialog.is_none()
+            && let Some(at) = hover
+        {
+            crate::context_menu::open_for(app, at, crate::context_menu::Target::ViewGizmo);
         }
     }
     let square_on = faces.iter().filter(|f| f.text_axes.is_some()).count() == 1;

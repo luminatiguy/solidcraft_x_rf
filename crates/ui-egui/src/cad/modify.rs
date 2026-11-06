@@ -304,7 +304,9 @@ impl SelectThen {
         let objs = self.objs();
         if self.op == Op::ArrayRect {
             let (mut cols, mut rows, mut dc, mut dr) = ARRAY.with(Cell::get);
-            let count = |v: f64| if (1.0..=500.0).contains(&v) && v.fract() == 0.0 { Ok(v as u32) } else { Err("Enter a whole number from 1 to 500.".to_string()) };
+            let count = |v: f64| {
+                if (1.0..=500.0).contains(&v) && v.fract() == 0.0 { Ok(v as u32) } else { Err("Enter a whole number from 1 to 500.".to_string()) }
+            };
             match (self.stage, v) {
                 (0, Some(v)) => cols = count(v)?,
                 (1, Some(v)) => rows = count(v)?,
@@ -341,7 +343,11 @@ impl SelectThen {
                 return Ok(Step::Continue);
             }
             let c = self.pts[0];
-            run(app, "sketch.pattern.circular", json!({"entities": objs, "center": xy(c), "count": items, "angle": fill.abs(), "reversed": fill < 0.0}))?;
+            run(
+                app,
+                "sketch.pattern.circular",
+                json!({"entities": objs, "center": xy(c), "count": items, "angle": fill.abs(), "reversed": fill < 0.0}),
+            )?;
             Ok(Step::Done)
         }
     }
@@ -377,7 +383,9 @@ fn join(app: &mut SolveApp, objs: &[String]) -> Res {
                     }
                     (Shape::Arc { c, r, a0, a1 }, Shape::Arc { c: c2, r: r2, a0: b0, a1: b1 }) if c.dist(*c2) < tol && (r - r2).abs() < tol => {
                         // j continues i counter-clockwise.
-                        if (geo::norm_angle_from(*b0, *a1) - *a1).abs() < 1e-7 || (geo::norm_angle_from(*b0, *a1) - *a1 - std::f64::consts::TAU).abs() < 1e-7 {
+                        if (geo::norm_angle_from(*b0, *a1) - *a1).abs() < 1e-7
+                            || (geo::norm_angle_from(*b0, *a1) - *a1 - std::f64::consts::TAU).abs() < 1e-7
+                        {
                             let end = geo::norm_angle_from(*b1, *b0) - *b0 + *a1;
                             if end - *a0 >= std::f64::consts::TAU - 1e-7 {
                                 None
@@ -581,7 +589,9 @@ struct OffsetM {
 impl Machine for OffsetM {
     fn prompt(&self, _: &SolveApp) -> Prompt {
         match (self.distance.is_some() || self.through, &self.object) {
-            (false, _) => Prompt::new("Specify offset distance", Accept::POINT_OR_NUMBER).kw(&["Through"]).default(geo::fmt(OFFSET_D.with(Cell::get))),
+            (false, _) => {
+                Prompt::new("Specify offset distance", Accept::POINT_OR_NUMBER).kw(&["Through"]).default(geo::fmt(OFFSET_D.with(Cell::get)))
+            }
             (true, None) => Prompt::new("Select object to offset", Accept::PICK).kw(&["Exit"]),
             (true, Some(_)) if self.through => Prompt::new("Specify through point", Accept::POINT),
             (true, Some(_)) => Prompt::new("Specify point on side to offset", Accept::POINT),
@@ -711,7 +721,9 @@ impl Machine for StretchM {
                 let mut out: Vec<Prev> = ents(app)
                     .into_iter()
                     .filter_map(|e| match e.shape {
-                        Shape::Line(a, z) if inside(a) || inside(z) => Some(Prev::Line(vec![if inside(a) { a + d } else { a }, if inside(z) { z + d } else { z }])),
+                        Shape::Line(a, z) if inside(a) || inside(z) => {
+                            Some(Prev::Line(vec![if inside(a) { a + d } else { a }, if inside(z) { z + d } else { z }]))
+                        }
                         ref s if s.polyline().iter().all(|q| inside(*q)) => Some(Prev::Line(s.polyline().into_iter().map(|q| q + d).collect())),
                         _ => None,
                     })

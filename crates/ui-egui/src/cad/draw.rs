@@ -226,10 +226,23 @@ impl Machine for CircleM {
         let last = LAST_RADIUS.with(Cell::get);
         match (self.mode, n) {
             (0, 0) => Prompt::new("Specify center point for circle", Accept::POINT).kw(&["3P", "2P", "Ttr"]),
-            (0, _) if self.diameter => Prompt::new("Specify diameter of circle", Accept::POINT_OR_NUMBER).base(self.pts.first().copied()).default(geo::fmt(last * 2.0)),
-            (0, _) => Prompt::new("Specify radius of circle", Accept::POINT_OR_NUMBER).kw(&["Diameter"]).base(self.pts.first().copied()).default(geo::fmt(last)),
-            (1, k) => Prompt::new(["Specify first point on circle", "Specify second point on circle", "Specify third point on circle"].get(k).copied().unwrap_or(""), Accept::POINT).base(self.pts.last().copied()),
-            (2, k) => Prompt::new(if k == 0 { "Specify first end point of circle's diameter" } else { "Specify second end point of circle's diameter" }, Accept::POINT).base(self.pts.last().copied()),
+            (0, _) if self.diameter => {
+                Prompt::new("Specify diameter of circle", Accept::POINT_OR_NUMBER).base(self.pts.first().copied()).default(geo::fmt(last * 2.0))
+            }
+            (0, _) => Prompt::new("Specify radius of circle", Accept::POINT_OR_NUMBER)
+                .kw(&["Diameter"])
+                .base(self.pts.first().copied())
+                .default(geo::fmt(last)),
+            (1, k) => Prompt::new(
+                ["Specify first point on circle", "Specify second point on circle", "Specify third point on circle"].get(k).copied().unwrap_or(""),
+                Accept::POINT,
+            )
+            .base(self.pts.last().copied()),
+            (2, k) => Prompt::new(
+                if k == 0 { "Specify first end point of circle's diameter" } else { "Specify second end point of circle's diameter" },
+                Accept::POINT,
+            )
+            .base(self.pts.last().copied()),
             (_, _) => match self.tans.len() {
                 0 => Prompt::new("Specify point on object for first tangent of circle", Accept::PICK),
                 1 => Prompt::new("Specify point on object for second tangent of circle", Accept::PICK),
@@ -510,7 +523,9 @@ impl Machine for PolygonM {
             (Some(_), true, 0, _) => Prompt::new("Specify first endpoint of edge", Accept::POINT),
             (Some(_), true, _, _) => Prompt::new("Specify second endpoint of edge", Accept::POINT).base(self.pts.first().copied()),
             (Some(_), false, 0, _) => Prompt::new("Specify center of polygon", Accept::POINT).kw(&["Edge"]),
-            (Some(_), false, _, None) => Prompt::new("Enter an option", Accept::NUMBER).kw(&["Inscribed in circle", "Circumscribed about circle"]).default("I"),
+            (Some(_), false, _, None) => {
+                Prompt::new("Enter an option", Accept::NUMBER).kw(&["Inscribed in circle", "Circumscribed about circle"]).default("I")
+            }
             (Some(_), false, _, Some(_)) => Prompt::new("Specify radius of circle", Accept::POINT_OR_NUMBER).base(self.pts.first().copied()),
         }
     }
@@ -622,11 +637,12 @@ impl EllipseM {
         let r1 = u.len();
         let Some(d) = u.normalized() else { return Vec::new() };
         let n = Vec2::new(-d.y, d.x);
-        (0..=96).map(|k| {
-            let t = TAU * k as f64 / 96.0;
-            c + d * (r1 * t.cos()) + n * (r2 * t.sin())
-        })
-        .collect()
+        (0..=96)
+            .map(|k| {
+                let t = TAU * k as f64 / 96.0;
+                c + d * (r1 * t.cos()) + n * (r2 * t.sin())
+            })
+            .collect()
     }
     fn make(&self, app: &mut SolveApp, r2: f64) -> Res {
         let (c, e) = self.axis().ok_or("Specify the axis first")?;

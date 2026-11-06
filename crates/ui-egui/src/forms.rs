@@ -117,6 +117,8 @@ pub struct State {
     pub show_work_plane: bool,
     /// Set Work Plane waits for a plane or face to be picked.
     pub picking_work_plane: bool,
+    /// Orient to a plane (the view cube's menu) waits for a plane or flat face.
+    pub picking_view_plane: bool,
     session: Option<FormSession>,
     /// Finishing or cancelling a form's sketch ourselves: the Finish hook lets it through.
     leaving: bool,
@@ -141,18 +143,18 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     }
     if id == "workplane.show" {
         app.forms.show_work_plane = !app.forms.show_work_plane;
-        let text = if app.forms.show_work_plane {
-            format!("Work plane shown: {}", work_plane_name(app))
-        } else {
-            "Work plane hidden".to_string()
-        };
+        let text = if app.forms.show_work_plane { format!("Work plane shown: {}", work_plane_name(app)) } else { "Work plane hidden".to_string() };
         status(app, text, false);
         return true;
     }
     // A sketch starts from a form tool (or Model Line). Surface, Sheet Metal and Weldments build
     // from sketches of their own and keep their New Sketch.
     if id == "sketch.create" && !matches!(app.ui.tab.as_str(), "SURFACE" | "SHEET METAL" | "WELDMENTS") {
-        status(app, "A sketch starts from a modelling tool: choose Extrusion, Blend, Revolve, Sweep, Swept Blend or Model Line on the MODEL tab", true);
+        status(
+            app,
+            "A sketch starts from a modelling tool: choose Extrusion, Blend, Revolve, Sweep, Swept Blend or Model Line on the MODEL tab",
+            true,
+        );
         return true;
     }
     // A form's own sketch is finished by Finish: a feature command started from it (its key)
@@ -247,6 +249,20 @@ fn work_plane_world(app: &SolveApp) -> Option<Plane> {
         }
         Some(_) => None,
     }
+}
+
+/// The view cube's Orient to a plane: the next plane or flat face clicked faces the view.
+pub fn start_orient_plane(app: &mut SolveApp) {
+    app.forms.picking_view_plane = true;
+    app.forms.picking_work_plane = false;
+    status(app, "Orient to a plane: click a plane or a flat face of the model (Esc: cancel)", false);
+}
+
+fn orient_to(app: &mut SolveApp, sel: Sel) {
+    app.forms.picking_view_plane = false;
+    let _ = app.session.execute("select.set", &json!({"items": [sel]}));
+    app.start("view.normal_to");
+    app.forms.clear_selection = true;
 }
 
 // ---- Sketch mode isolation ----------------------------------------------------------------
@@ -351,6 +367,22 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     };
     let text = format!("{}: {hint}", form.label(void));
     status(app, text, false);
+}
+
+/// The work plane as `sketch.create` takes it, and its own normal (before any flip).
+fn work_plane_ref(app: &SolveApp) -> Option<(Value, Vec3)> {
+    match app.forms.work_plane.clone().unwrap_or(Sel::Plane { name: XY.into() }) {
+        Sel::Plane { name } => {
+            let plane = crate::viewport::named_plane(app, &name)?;
+            Some((json!(name), plane.normal()))
+        }
+        sel @ Sel::Face { .. } => {
+            let Sel::Face { body, index, .. } = &sel else { return None };
+            let (_, normal) = crate::dialogs::planar_face(&app.session, body, *index)?;
+            Some((crate::sketch_attachment_ui::face_plane(app, &sel)?, normal))
+        }
+        _ => None,
+    }
 }
 
 /// Open the form's first sketch on the work plane `sel`. On a face, the face's edges are not
@@ -549,13 +581,7 @@ fn profile_sels(sketch: u64, profiles: &[usize]) -> Vec<Sel> {
 
 /// Curves drawn in the sketch (not construction, centerlines, infinite or projected lines).
 fn drawn_curves(ss: &solidcraft_engine::doc::SolvedSketch) -> Vec<usize> {
-    ss.sketch
-        .curves
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.construction && !c.centerline && !c.infinite && c.link.is_none())
-        .map(|(i, _)| i)
-        .collect()
+    ss.sketch.curves.iter().enumerate().filter(|(_, c)| !c.construction && !c.centerline && !c.infinite && c.link.is_none()).map(|(i, _)| i).collect()
 }
 
 /// The size of what is drawn in the sketch, its larger side (mm).
@@ -690,10 +716,22 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             drop(st);
             leave(app, "sketch.finish");
             app.forms.session = Some(session);
-            // The top: on the plane parallel to the base, `depth` along its normal.
+            // The top: on the work plane offset by `depth` toward the base sketch's side, so it
+            // follows the work plane when that moves; else (no reference) a plane parallel to the
+            // base, `depth` along its normal.
             let top = base.offset(depth);
             let focus = drawn_centre(app, active).map(|c| c + base.normal() * depth);
-            open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus).inspect_err(|_| abort(app, true))?;
+            let tied = work_plane_ref(app).map(|(plane, normal)| {
+                let sign = if normal.dot(base.normal()) < 0.0 { -1.0 } else { 1.0 };
+                json!({"plane": plane, "offset": format!("{} mm", sign * depth), "name": "Blend Top", "project_edges": false})
+            });
+            let opened = match tied {
+                Some(params) => {
+                    open_next(app, params, focus).or_else(|_| open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus))
+                }
+                None => open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus),
+            };
+            opened.inspect_err(|_| abort(app, true))?;
             status(app, format!("Blend: draw the top loop ({depth} mm above the base), then Finish"), false);
         }
         (Form::Blend, _) => {
@@ -785,6 +823,17 @@ fn apply_fill(app: &mut SolveApp) -> bool {
         }
     }
     d.active = d.inputs.iter().position(|i| i.items.is_empty()).unwrap_or(0);
+    // A form is an object of its own: solids never join others by themselves (MODIFY ▸ Join does).
+    if !fill.void {
+        match &mut d.kind {
+            Kind::Extrude { operation, auto_op, .. } => {
+                *operation = 0;
+                *auto_op = false;
+            }
+            Kind::Revolve { operation, .. } | Kind::Loft { operation, .. } | Kind::Sweep { operation, .. } => *operation = 0,
+            _ => {}
+        }
+    }
     if fill.void {
         match &mut d.kind {
             Kind::Extrude { operation, auto_op, .. } => {
@@ -811,11 +860,15 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if std::mem::take(&mut app.forms.clear_selection) {
         let _ = app.session.execute("select.clear", &json!({}));
     }
-    if app.forms.picking_work_plane {
+    if app.forms.picking_work_plane || app.forms.picking_view_plane {
         let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || app.session.active_sketch.is_some() || app.dialog.is_some() {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            || app.dialog.is_some()
+            || (app.forms.picking_work_plane && app.session.active_sketch.is_some())
+        {
             app.forms.picking_work_plane = false;
-            status(app, "Set Work Plane cancelled", false);
+            app.forms.picking_view_plane = false;
+            status(app, "Cancelled", false);
         } else if let Some(pos) = click
             && let Some(rect) = app.viewport.rect.filter(|r| r.contains(pos))
         {
@@ -831,6 +884,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                 _ => None,
             });
             match found {
+                Some(sel) if app.forms.picking_view_plane => orient_to(app, sel),
                 Some(sel) => {
                     adopt_work_plane(app, sel);
                     // The viewport selects what was clicked later this frame.
@@ -843,7 +897,11 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             }
         } else if let Some(sel) = app.session.selection.iter().find(|s| plane_pick(app, s)).cloned() {
             // A plane picked in the browser.
-            adopt_work_plane(app, sel);
+            if app.forms.picking_view_plane {
+                orient_to(app, sel);
+            } else {
+                adopt_work_plane(app, sel);
+            }
         }
     }
     if let Some(mut fill) = app.forms.fill.clone() {

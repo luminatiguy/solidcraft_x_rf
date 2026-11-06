@@ -32,7 +32,7 @@ pub fn tab_name(tab: &str) -> String {
     crate::i18n::tr_label(&cased).to_string()
 }
 
-pub const TABS: &[&str] = &["MODEL", "MODIFY", "SURFACE", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW"];
+pub const TABS: &[&str] = &["MODEL", "SURFACE", "INSERT", "INSPECT", "MANAGE", "VIEW", "MODIFY"];
 
 /// Reading order of the compact, three-column constraint gallery. Icons come from each spec.
 pub const CONSTRAINT_GALLERY: &[&str] = &[
@@ -115,15 +115,49 @@ const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.config
 /// points are moved with the triad that appears when one is clicked, not a Move button.
 pub const AGENT_ONLY: &[&str] = &["sketch.solve", "sketch.move3d"];
 
+/// Commands kept out of the interface (search, help): assemblies, sheet metal, weldments, plastic
+/// parts, and the feature commands the form tools and the MODIFY tab replace. They still run for
+/// designs that use them, for scripts and agents.
+pub fn hidden(id: &str) -> bool {
+    const KEPT: &[&str] = &[
+        "sketch.finish",
+        "sketch.cancel",
+        "sketch.text",
+        "sketch.edit",
+        "sketch.project",
+        "sketch.intersect",
+        "sketch.insert_dxf",
+        "sketch.insert_svg",
+    ];
+    if AGENT_ONLY.contains(&id) {
+        return true;
+    }
+    if KEPT.contains(&id) {
+        return false;
+    }
+    [
+        "joint.",
+        "sheet.",
+        "frame.",
+        "component.",
+        "occurrence.",
+        "contact.",
+        "motion.",
+        "explode.",
+        "plastic.",
+        "parts.",
+        "assembly.",
+        "solid.",
+        "sketch.",
+    ]
+    .iter()
+    .any(|p| id.starts_with(p))
+}
+
 pub const SECTIONS: &[Section] = &[
     // MODEL: forms built from a sketch on the work plane (`forms.rs`). A form tool opens the
     // sketch itself; there is no separate New Sketch here.
-    Section {
-        tab: "MODEL",
-        panel: "FORMS",
-        promoted: 5,
-        ids: &["form.extrusion", "form.blend", "form.revolve", "form.sweep", "form.swept_blend"],
-    },
+    Section { tab: "MODEL", panel: "FORMS", promoted: 5, ids: &["form.extrusion", "form.blend", "form.revolve", "form.sweep", "form.swept_blend"] },
     // One drop-down button (promoted 0) listing the void versions.
     Section {
         tab: "MODEL",
@@ -135,27 +169,9 @@ pub const SECTIONS: &[Section] = &[
     Section { tab: "MODEL", panel: "DRAW", promoted: 1, ids: &["model.line"] },
     // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
     Section { tab: "MODEL", panel: "FINISH EDITING", promoted: 1, ids: &["component.finish_edit"] },
-    // The earlier MODEL tools (features from existing sketches, edits, patterns, planes).
-    Section {
-        tab: "MODIFY",
-        panel: "CREATE",
-        promoted: 3,
-        ids: &["solid.extrude", "solid.revolve", "solid.hole", "sketch.edit", "sketch.line3d", "sketch.arc3d", "sketch.spline3d", "sketch.point3d"],
-    },
-    Section {
-        tab: "MODIFY",
-        panel: "MODIFY",
-        promoted: 4,
-        ids: &["solid.fillet", "solid.chamfer", "solid.shell", "solid.press_pull", "sheet.convert"],
-    },
-    Section {
-        tab: "MODIFY",
-        panel: "ARRANGE",
-        promoted: 3,
-        ids: &["solid.move", "solid.mirror", "solid.pattern.rectangular", "solid.align", "solid.pattern.circular", "solid.pattern.path"],
-    },
-    Section { tab: "MODIFY", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
-    Section { tab: "MODIFY", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
+    // Whole objects: moved, copied, turned, mirrored, joined and cut (`objects.rs`).
+    Section { tab: "MODIFY", panel: "MODIFY", promoted: 4, ids: &["obj.move", "obj.copy", "obj.rotate", "obj.mirror"] },
+    Section { tab: "MODIFY", panel: "GEOMETRY", promoted: 3, ids: &["obj.join", "obj.unjoin", "obj.cut"] },
     // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
     Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
@@ -325,7 +341,12 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section { tab: "SKETCH", panel: "TEXT", promoted: 1, ids: &["sketch.text"] },
-    Section { tab: "SKETCH", panel: "REFERENCE", promoted: 1, ids: &["sketch.project", "sketch.intersect", "sketch.insert_dxf", "sketch.insert_svg"] },
+    Section {
+        tab: "SKETCH",
+        panel: "REFERENCE",
+        promoted: 1,
+        ids: &["sketch.project", "sketch.intersect", "sketch.insert_dxf", "sketch.insert_svg"],
+    },
     Section { tab: "SKETCH", panel: "FINISH SKETCH", promoted: 2, ids: &["sketch.finish", "sketch.cancel"] },
     // New Sketch leads the tab, as on MODEL: a sheet part starts from a sketch (#3250).
     Section { tab: "SHEET METAL", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
@@ -553,7 +574,7 @@ pub fn layout<'a>(tab: &str, panel: &str, specs: &[&'a CommandSpec]) -> Option<(
     let section = SECTIONS.iter().find(|s| s.tab == tab && s.panel == panel)?;
     let mut out: Vec<_> = section.ids.iter().filter_map(|id| specs.iter().find(|c| c.id == *id).copied()).collect();
     // The SKETCH tab lists only its own tools: the earlier sketch commands stay out of it.
-    if section.tab == "SKETCH" {
+    if matches!(section.tab, "SKETCH" | "MODIFY" | "MODEL") {
         return Some((out, section.promoted));
     }
     for c in specs.iter().filter(|c| destination(c) == Some((section.tab, section.panel))) {
@@ -647,15 +668,15 @@ pub struct SpecialtyTab {
     pub icon: &'static str,
 }
 
-pub const SPECIALTY_TABS: &[SpecialtyTab] =
-    &[SpecialtyTab { tab: "SHEET METAL", icon: "sheet" }, SpecialtyTab { tab: "WELDMENTS", icon: "frame_member" }];
+/// Sheet Metal and Weldments are not offered (their commands stay for files that use them).
+pub const SPECIALTY_TABS: &[SpecialtyTab] = &[];
 
 /// A tab's row in the toolbar menu: the icon of the command that leads the tab (Model › Create ›
 /// Extrude, Inspect › Measure, View › Views and so on).
 pub fn tab_icon(tab: &str) -> &'static str {
     match tab {
         "MODEL" => "extrude",
-        "MODIFY" => "fillet",
+        "MODIFY" => "cad:move",
         "SURFACE" => "surface_extrude",
         "ASSEMBLE" => "joint",
         "INSERT" => "import",

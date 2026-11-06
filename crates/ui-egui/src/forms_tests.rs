@@ -42,7 +42,8 @@ fn last_kind(h: &Harness) -> FeatureKind {
 #[test]
 fn the_model_tab_has_the_form_tools() {
     let ids: Vec<&str> = crate::workspace::SECTIONS.iter().filter(|s| s.tab == "MODEL").flat_map(|s| s.ids.iter().copied()).collect();
-    for id in ["form.extrusion", "form.blend", "form.revolve", "form.sweep", "form.swept_blend", "form.void.extrusion", "workplane.set", "model.line"] {
+    for id in ["form.extrusion", "form.blend", "form.revolve", "form.sweep", "form.swept_blend", "form.void.extrusion", "workplane.set", "model.line"]
+    {
         assert!(ids.contains(&id), "{id}");
         assert!(solidcraft_engine::find_command(id).is_some(), "{id} is registered");
     }
@@ -176,7 +177,11 @@ fn sweep_takes_a_rectangle_profile_too() {
     finish(&mut h);
     ok(&mut h);
     assert_eq!(bodies(&h), 1);
-    assert_eq!(h.app.session.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).count(), 2, "the void's sketch went when Sweep started");
+    assert_eq!(
+        h.app.session.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).count(),
+        2,
+        "the void's sketch went when Sweep started"
+    );
 }
 
 #[test]

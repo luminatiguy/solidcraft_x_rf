@@ -211,7 +211,11 @@ fn trim_fillet_and_offset() {
     feed(&mut h.app, pick(&horizontal, 18.0, 0.0));
     feed(&mut h.app, Input::Enter);
     let l = lines(&h);
-    assert!(l.iter().any(|(a, b)| (a.dist(Vec2::new(0.0, 0.0)) < 1e-6 && b.dist(Vec2::new(10.0, 0.0)) < 1e-6) || (b.dist(Vec2::new(0.0, 0.0)) < 1e-6 && a.dist(Vec2::new(10.0, 0.0)) < 1e-6)), "{l:?}");
+    assert!(
+        l.iter().any(|(a, b)| (a.dist(Vec2::new(0.0, 0.0)) < 1e-6 && b.dist(Vec2::new(10.0, 0.0)) < 1e-6)
+            || (b.dist(Vec2::new(0.0, 0.0)) < 1e-6 && a.dist(Vec2::new(10.0, 0.0)) < 1e-6)),
+        "{l:?}"
+    );
     assert!(!l.iter().any(|(a, b)| a.x > 10.5 || b.x > 10.5), "the right piece is gone: {l:?}");
     // Offset the vertical line 3 to the right.
     let vertical = id_of_line_near(&h, Vec2::new(10.0, 4.0));

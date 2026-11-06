@@ -89,8 +89,7 @@ pub fn foreign(app: &SolveApp, sid: u64, plane: &Plane) -> Arc<Vec<Shape>> {
         let (m, place) = b.mesh_in_place();
         let moved = !solidcraft_engine::doc::is_identity(&place);
         for e in m.edges.iter().take(20_000) {
-            let pts: Vec<Vec2> =
-                e.iter().map(|p| if moved { solidcraft_engine::doc::apply_point(&place, *p) } else { *p }).map(flat).collect();
+            let pts: Vec<Vec2> = e.iter().map(|p| if moved { solidcraft_engine::doc::apply_point(&place, *p) } else { *p }).map(flat).collect();
             if pts.len() < 2 {
                 continue;
             }
@@ -139,8 +138,8 @@ pub fn foreign(app: &SolveApp, sid: u64, plane: &Plane) -> Arc<Vec<Shape>> {
 /// curve's special point, its nearest point last. `base`: the point a line is drawn from (for
 /// Perpendicular).
 pub fn find(own: &[Ent], foreign: &[Shape], cursor: Vec2, aperture: f64, base: Option<Vec2>, nearest: bool) -> Option<Hit> {
-    let near: Vec<&Shape> =
-        own.iter()
+    let near: Vec<&Shape> = own
+        .iter()
         .map(|e| &e.shape)
         .chain(foreign.iter())
         .filter(|s| s.dist(cursor) <= aperture * 2.5 || matches!(s, Shape::Circle(c, _) | Shape::Arc { c, .. } if c.dist(cursor) <= aperture))

@@ -22,6 +22,7 @@ macro_rules! planned {
 
 mod bom;
 mod browser;
+mod cadtools;
 pub(crate) mod clearance;
 mod clipboard;
 mod clipboard_foreign;
@@ -39,7 +40,6 @@ mod edit;
 mod face;
 mod features;
 mod features_more;
-mod cadtools;
 mod forms;
 mod join_pieces;
 pub(crate) use construct::{GeoForm, GeoFormError, REF as GEO_REF_FORMS, SKETCH_PART, geo_form, is_model_axis, plane_axis_point_kind};
@@ -372,6 +372,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(section::COMMANDS.iter());
     v.extend(view_navigation::COMMANDS.iter());
     v.extend(view_dxf::COMMANDS.iter());
+    v.extend(view_dxf::drawing::COMMANDS.iter());
     v.extend(settings::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());
     v.extend(render::COMMANDS.iter());

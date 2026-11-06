@@ -14,6 +14,10 @@ as libraries. truck-shapeops 0.4.0 is vendored in vendor/truck-shapeops with Sol
 modifications (listed in vendor/README.md and marked in the source); its licence is in
 vendor/truck-shapeops/LICENSE. Copyright (c) RICOS Co. Ltd.
 
+DWG output (crates/io/src/dwg_out.rs) uses the acadrust crate 0.6.6
+(https://crates.io/crates/acadrust), licensed under the Mozilla Public License 2.0, as an
+unmodified dependency; its source is available from crates.io.
+
 Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which are
 licensed MIT OR Apache-2.0; ATTRIBUTION.md lists the files.
 The release packaging (.github/workflows/release.yml, packaging/) is adapted from PhotoCraft

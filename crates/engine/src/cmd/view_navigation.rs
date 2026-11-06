@@ -58,7 +58,7 @@ CommandSpec::new("view.tool", "Navigation tool", tool)
 CommandSpec::new("view.spin", "Continuous orbit", spin)
     .icon("spin").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; continuous orbit until the next click or key"),
 CommandSpec::new("view.visual_style", "Visual style", visual_style)
-    .icon("style").noundo().doc_only().params("style: shaded_with_edges|shaded|wireframe|shaded_with_hidden_edges → style, index (0..3 in that order)"),
+    .icon("style").noundo().doc_only().params("style: shaded_with_edges|shaded|wireframe|shaded_with_hidden_edges|hidden_line → style, index (0..4 in that order); hidden_line: the edges only, those behind faces hidden"),
 CommandSpec::new("view.grid", "Grid", grid)
     .icon("style").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; show the viewport grid"),
 CommandSpec::new("view.ground_shadow", "Ground shadow", ground_shadow)
@@ -294,7 +294,8 @@ fn visual_style(_s: &mut Session, p: &Value) -> Result<Value> {
         Some("shaded") => 1,
         Some("wireframe") => 2,
         Some("shaded_with_hidden_edges") => 3,
-        _ => return Err(bad(cmd, "style must be shaded_with_edges, shaded, wireframe or shaded_with_hidden_edges")),
+        Some("hidden_line") => 4,
+        _ => return Err(bad(cmd, "style must be shaded_with_edges, shaded, wireframe, shaded_with_hidden_edges or hidden_line")),
     };
     Ok(json!({"style": style, "index": index}))
 }
