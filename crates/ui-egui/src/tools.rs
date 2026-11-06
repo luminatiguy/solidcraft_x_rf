@@ -72,6 +72,8 @@ pub enum Kind {
     Dimension,
     /// A tool from `sketch_tools` (it handles its own clicks).
     Ext,
+    /// A sketch tool after CADCraft's (`cad`): its prompt machine takes the clicks.
+    Cad,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +143,7 @@ impl Tool {
             "sketch.constraint.collinear" => ("sketch.constraint.collinear", Kind::Pick(2)),
             "sketch.constraint.midpoint" => ("sketch.constraint.midpoint", Kind::Pick(2)),
             "sketch.constraint.symmetry" => ("sketch.constraint.symmetry", Kind::Pick(3)),
+            id if id.starts_with("cad.") => (solidcraft_engine::find_command(id)?.id, Kind::Cad),
             _ => return crate::sketch_tools::tool_for(id),
         };
         Some(Tool {
@@ -219,6 +222,10 @@ fn midpoint_at(app: &SolveApp, proj: &Proj, pos: Pos2, radius: f32) -> Option<(V
 }
 
 pub fn on_hover(app: &mut SolveApp, proj: &Proj, pos: Pos2, shift: bool) {
+    if app.tool.as_ref().is_some_and(|t| t.kind == Kind::Cad) {
+        crate::cad::hover(app, proj, pos);
+        return;
+    }
     crate::sketch3d::on_hover(app, proj, pos);
     if let Some(mut tool) = app.tool.take() {
         crate::sketch_line_arc::rejoin(app, &mut tool);
@@ -280,6 +287,10 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2, shift: bool) {
     // the next dimension before that cancellation has been processed. The type-first value
     // of the Dimension tool takes clicks itself (a second pick, or where its text goes).
     if crate::dim_view::editing() && crate::dim_view::live().is_none() {
+        return;
+    }
+    if app.tool.as_ref().is_some_and(|t| t.kind == Kind::Cad) {
+        crate::cad::click(app, proj, pos);
         return;
     }
     let Some(mut tool) = app.tool.take() else { return };
@@ -370,6 +381,7 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2, shift: bool) {
             }
         }
         Kind::Ext => crate::sketch_tools::on_click(app, &mut tool, proj, pos),
+        Kind::Cad => {}
         Kind::Dimension => {
             let hits = pick(app, proj, pos);
             // The snap identifies the intended line even when another (projected) edge
@@ -886,6 +898,10 @@ pub fn undo_spline_point(app: &mut SolveApp) -> bool {
 
 /// Right click / Esc: end the current chain (line) or cancel the tool.
 pub fn finish(app: &mut SolveApp) {
+    if app.tool.as_ref().is_some_and(|t| t.kind == Kind::Cad) {
+        crate::cad::escape(app);
+        return;
+    }
     crate::dim_view::cancel();
     if crate::sketch3d::finish(app) {
         return;
@@ -1166,6 +1182,9 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     }
     if t.kind == Kind::Ext {
         return crate::sketch_tools::preview(app, t, painter, proj);
+    }
+    if t.kind == Kind::Cad {
+        return crate::cad::paint(app, painter, proj);
     }
     let Some(sid) = app.session.active_sketch else { return };
     let st = crate::open_meshing::session_world(&app.session);

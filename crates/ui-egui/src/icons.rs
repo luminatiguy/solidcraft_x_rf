@@ -85,6 +85,12 @@ enum Mirror {
 }
 
 fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity: f32, ink: Option<Color32>, mirror: Mirror) {
+    // The sketch tools' icons are CADCraft's, drawn in code (`cad_icons`).
+    if let Some(icon) = crate::cad_icons::by_name(name) {
+        let side = r.width().min(r.height());
+        crate::cad_icons::paint(p, Rect::from_center_size(r.center(), egui::vec2(side, side)), icon, opacity < 0.6);
+        return;
+    }
     let ctx = p.ctx();
     let resolved = icon_svg::resolve(name);
     let look = Look::themed(dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), resolved.accent, crate::theme::vision());

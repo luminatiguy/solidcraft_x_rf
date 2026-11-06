@@ -121,6 +121,8 @@ pub struct State {
     /// Finishing or cancelling a form's sketch ourselves: the Finish hook lets it through.
     leaving: bool,
     fill: Option<Fill>,
+    /// Where Finish found the contour open (sketch coordinates), marked until it is closed.
+    open_ends: Vec<Vec2>,
     /// Clear the selection next frame (what the click that set the work plane selected).
     clear_selection: bool,
 }
@@ -379,7 +381,8 @@ fn opened_sketch(app: &mut SolveApp, look: bool) {
         s.sketches.push(id);
     }
     app.ui.tab = "SKETCH".into();
-    app.start("sketch.line");
+    app.forms.open_ends.clear();
+    app.start("cad.line");
 }
 
 fn plane_json(p: &Plane) -> Value {
@@ -471,6 +474,41 @@ fn abort(app: &mut SolveApp, delete: bool) {
         let _ = app.run("timeline.delete", json!({"features": earlier}));
     }
     status(app, format!("{} cancelled", session.form.label(session.void)), false);
+}
+
+/// The ends of the sketch's drawn curves that touch no other drawn curve: where its contour is
+/// open. Construction geometry and centerlines don't count.
+pub fn open_ends(app: &SolveApp, sketch: u64) -> Vec<Vec2> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let Some(ss) = st.sketch(sketch) else { return Vec::new() };
+    let ents: Vec<crate::cad::geo::Ent> = crate::cad::geo::ents(&ss.sketch).into_iter().filter(|e| !e.construction).collect();
+    let tol = 1e-4;
+    let mut out = Vec::new();
+    for (i, e) in ents.iter().enumerate() {
+        for end in e.shape.ends() {
+            let joined = ents.iter().enumerate().any(|(j, o)| j != i && o.shape.dist(end) <= tol);
+            if !joined && !out.iter().any(|p: &Vec2| p.dist(end) <= tol) {
+                out.push(end);
+            }
+        }
+    }
+    out
+}
+
+/// The open ends Finish found, as red rings while the sketch is open.
+pub fn paint_open_ends(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Proj) {
+    let Some(sid) = app.session.active_sketch else { return };
+    if app.forms.open_ends.is_empty() {
+        return;
+    }
+    let st = crate::open_meshing::session_world(&app.session);
+    let Some(ss) = st.sketch(sid) else { return };
+    for p in &app.forms.open_ends {
+        if let Some(sp) = proj.to_screen(ss.plane.to_world(*p)) {
+            painter.circle_stroke(sp, 7.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0xe5, 0x3e, 0x3e)));
+            painter.circle_filled(sp, 2.5, egui::Color32::from_rgb(0xe5, 0x3e, 0x3e));
+        }
+    }
 }
 
 /// The open sketch's closed regions a form takes: those inside an even number of others, so a
@@ -613,7 +651,14 @@ fn path_of(app: &SolveApp, sketch: u64) -> Result<PathInfo, String> {
 /// The form's sketch `active` is finished: check it, then the next sketch or the feature.
 fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(), String> {
     let stage = session.sketches.len();
-    let closed = |app: &SolveApp| {
+    let closed = |app: &mut SolveApp| {
+        let ends = open_ends(app, active);
+        if !ends.is_empty() {
+            let n = ends.len();
+            app.forms.open_ends = ends;
+            return Err(format!("the contour is not closed: {n} open end{} (marked red); join them, then Finish", if n == 1 { "" } else { "s" }));
+        }
+        app.forms.open_ends.clear();
         let p = solid_profiles(app, active);
         if p.is_empty() { Err("the sketch needs a closed loop (draw one, or close the open one), then Finish".to_string()) } else { Ok(p) }
     };

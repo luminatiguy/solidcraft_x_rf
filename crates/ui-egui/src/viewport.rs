@@ -5084,7 +5084,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         // A right-click, unless the same press opened the mouse gestures' ring. egui's click
         // already allows the pointer a few points of travel, as a mouse moves while it is clicked.
         if resp.secondary_clicked() && !crate::mouse_gesture::took_press(app) {
-            if app.tool.is_some() {
+            // A sketch tool takes a right-click as Enter, as CADCraft does.
+            if app.tool.as_ref().is_some_and(|t| t.kind == crate::tools::Kind::Cad) {
+                crate::cad::enter(app);
+            } else if app.tool.is_some() {
                 crate::tools::finish(app);
             } else if app.dialog.is_none() {
                 crate::context_menu::open(app, p, held_mods);
@@ -5395,6 +5398,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     crate::canvas::show(app, ui, &painter, &proj);
     crate::sketch_tools::show(app, ui, &painter, &proj);
+    crate::forms::paint_open_ends(app, &painter, &proj);
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);
     crate::sketch_dims::show(app, ui, &proj);

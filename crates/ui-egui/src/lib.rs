@@ -14,6 +14,8 @@ pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
 pub mod bidi;
+mod cad;
+mod cad_icons;
 pub mod blur;
 pub mod bom_panel;
 pub mod browser;
@@ -623,6 +625,8 @@ pub struct SolveApp {
     pub start_after_roll: Option<(String, u64)>,
     /// The MODEL tab's form tools: the work plane and the form being sketched (`forms.rs`).
     pub(crate) forms: forms::State,
+    /// The sketch tools after CADCraft's: the one running and the snap switches (`cad`).
+    pub(crate) cad: cad::State,
     /// The ribbon tab before the current `start` moved it to the command's home tab. A command
     /// that starts nothing (refused with a parameter or status error) puts it back (#10540).
     pub(crate) command_tab_before_start: Option<String>,
@@ -867,6 +871,7 @@ impl SolveApp {
             deferred_queue: Vec::new(),
             start_after_roll: None,
             forms: forms::State::default(),
+            cad: cad::State::default(),
             command_tab_before_start: None,
             timeline_playback: None,
             delete_check: None,
@@ -1628,7 +1633,7 @@ impl SolveApp {
             return;
         }
         // The MODEL tab's form tools, the work plane and Model Line (`forms.rs`).
-        if forms::start_hook(self, id) {
+        if forms::start_hook(self, id) || cad::start_hook(self, id) {
             return;
         }
         if id != "occurrence.move" {
@@ -2981,6 +2986,8 @@ impl SolveApp {
             agent_chat::toggle_shortcut(self, ctx);
             // A digit for a construction line's Length box is not a shortcut (#10258).
             sketch_construction::claim_typed_length(self, ctx);
+            // The sketch tools take typed values, Enter and their snap keys first.
+            cad::tick(self, ctx);
             if !self.embedded {
                 toolbar::shortcuts(self, ctx);
             }

@@ -34,6 +34,9 @@ pub struct ToolbarCustom {
 impl ToolbarCustom {
     /// Whether a command still uses a compact gallery cell in this panel.
     pub fn in_gallery(&self, tab: &str, panel: &str, id: &str) -> bool {
+        if crate::workspace::small_tool(tab, panel, id) {
+            return true;
+        }
         tab == "SKETCH"
             && panel == "CONSTRAIN"
             && crate::workspace::CONSTRAINT_GALLERY.contains(&id)
@@ -190,6 +193,8 @@ fn key(tab: &str, panel: &str) -> String {
 pub fn buttons(app: &SolveApp, tab: &str, panel: &str, cmds: &[&'static CommandSpec], promoted: usize) -> Vec<&'static CommandSpec> {
     match app.toolbar_custom.panels.get(&key(tab, panel)) {
         Some(ids) => ids.iter().filter_map(|id| solidcraft_engine::find_command(id)).collect(),
+        // Small tools are shown too, as cells after the large buttons.
+        None if crate::workspace::SMALL_TOOLS.contains(&(tab, panel)) => cmds.to_vec(),
         None => cmds.iter().take(promoted).copied().collect(),
     }
 }

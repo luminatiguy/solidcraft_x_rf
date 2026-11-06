@@ -44,6 +44,16 @@ pub const CONSTRAINT_GALLERY: &[&str] = &[
     "sketch.constraint.perpendicular",
 ];
 
+/// Small ribbon tools, drawn as icon cells in columns of three after a section's large buttons
+/// (CADCraft's ribbon): every listed command of these sections past its promoted ones.
+pub const SMALL_TOOLS: &[(&str, &str)] = &[("SKETCH", "DRAW"), ("SKETCH", "MODIFY")];
+
+/// Is `id` a small tool cell of section `tab`/`panel`?
+pub fn small_tool(tab: &str, panel: &str, id: &str) -> bool {
+    SMALL_TOOLS.iter().any(|(t, p)| *t == tab && *p == panel)
+        && SECTIONS.iter().find(|s| s.tab == tab && s.panel == panel).is_some_and(|s| s.ids.iter().skip(s.promoted).any(|i| *i == id))
+}
+
 pub struct CommandGroup {
     pub label: &'static str,
     pub ids: &'static [&'static str],
@@ -267,63 +277,55 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section { tab: "VIEW", panel: "SELECT", promoted: 0, ids: &[] },
+    // The sketch tools after CADCraft's (`cad`): large buttons first, then small ones in columns
+    // of three (`SMALL_TOOLS`), as CADCraft's ribbon lays them out.
     Section {
         tab: "SKETCH",
-        panel: "CREATE",
-        promoted: 5,
+        panel: "DRAW",
+        promoted: 4,
         ids: &[
-            "sketch.line",
-            "sketch.rectangle.two_point",
-            "sketch.circle.center",
-            "sketch.arc.three_point",
-            "sketch.construction_line",
-            "sketch.infinite",
+            "cad.line",
+            "cad.pline",
+            "cad.circle",
+            "cad.rectang",
+            "cad.arc",
+            "cad.spline",
+            "cad.xline",
+            "cad.ellipse",
+            "cad.polygon",
+            "cad.point",
+            "cad.donut",
+            "cad.revcloud",
         ],
     },
     Section {
         tab: "SKETCH",
         panel: "MODIFY",
-        promoted: 3,
-        ids: &["sketch.trim", "sketch.offset", "sketch.fillet", "sketch.transform", "sketch.copy", "sketch.cut", "sketch.paste"],
-    },
-    Section { tab: "SKETCH", panel: "PATTERN", promoted: 3, ids: &["sketch.mirror", "sketch.pattern.circular", "sketch.pattern.rectangular"] },
-    Section {
-        tab: "SKETCH",
-        panel: "CONSTRAIN",
-        promoted: 7,
-        ids: &[
-            "sketch.dimension",
-            "sketch.constraint.horizontal_vertical",
-            "sketch.constraint.coincident",
-            "sketch.constraint.tangent",
-            "sketch.constraint.equal",
-            "sketch.constraint.parallel",
-            "sketch.constraint.perpendicular",
-            "sketch.construction",
-            "sketch.constrainer",
-        ],
-    },
-    Section {
-        tab: "SKETCH",
-        panel: "REFERENCE",
         promoted: 1,
         ids: &[
-            "sketch.project",
-            "sketch.intersect",
-            "sketch.include_3d",
-            "sketch.project_to_surface",
-            "sketch.intersection_curve",
-            "sketch.spun_profile",
-            "sketch.isoparametric_curve",
-            "sketch.fit_curves_to_section",
-            "sketch.insert_dxf",
-            "sketch.insert_svg",
-            "canvas.insert",
+            "cad.move",
+            "cad.copy",
+            "cad.rotate",
+            "cad.trim",
+            "cad.fillet",
+            "cad.arrayrect",
+            "cad.mirror",
+            "cad.scale",
+            "cad.extend",
+            "cad.offset",
+            "cad.arraypolar",
+            "cad.stretch",
+            "cad.chamfer",
+            "cad.explode",
+            "cad.break",
+            "cad.join",
+            "cad.erase",
+            "cad.lengthen",
+            "cad.matchprop",
         ],
     },
-    // Sketch dimensions are driven by parameters, so they are one click away while sketching.
-    Section { tab: "SKETCH", panel: "INSPECT", promoted: 1, ids: &["sketch.inspect"] },
-    Section { tab: "SKETCH", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
+    Section { tab: "SKETCH", panel: "TEXT", promoted: 1, ids: &["sketch.text"] },
+    Section { tab: "SKETCH", panel: "REFERENCE", promoted: 1, ids: &["sketch.project", "sketch.intersect", "sketch.insert_dxf", "sketch.insert_svg"] },
     Section { tab: "SKETCH", panel: "FINISH SKETCH", promoted: 2, ids: &["sketch.finish", "sketch.cancel"] },
     // New Sketch leads the tab, as on MODEL: a sheet part starts from a sketch (#3250).
     Section { tab: "SHEET METAL", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
@@ -550,6 +552,10 @@ pub(crate) fn legacy_render_destination(c: &CommandSpec) -> Option<(&'static str
 pub fn layout<'a>(tab: &str, panel: &str, specs: &[&'a CommandSpec]) -> Option<(Vec<&'a CommandSpec>, usize)> {
     let section = SECTIONS.iter().find(|s| s.tab == tab && s.panel == panel)?;
     let mut out: Vec<_> = section.ids.iter().filter_map(|id| specs.iter().find(|c| c.id == *id).copied()).collect();
+    // The SKETCH tab lists only its own tools: the earlier sketch commands stay out of it.
+    if section.tab == "SKETCH" {
+        return Some((out, section.promoted));
+    }
     for c in specs.iter().filter(|c| destination(c) == Some((section.tab, section.panel))) {
         if !out.iter().any(|o| o.id == c.id) {
             out.push(*c);

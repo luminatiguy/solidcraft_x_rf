@@ -1681,8 +1681,15 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                         }
                     })
                     .collect();
-                if shown.iter().any(|c| app.toolbar_custom.in_gallery(&tab, panel, c.id)) {
-                    widths.push(ButtonSize { width: gallery_width, min_width: gallery_width });
+                let cells = shown.iter().filter(|c| app.toolbar_custom.in_gallery(&tab, panel, c.id)).count();
+                if cells > 0 {
+                    // Small tools: columns of three, 27 points apart.
+                    let width = if crate::workspace::SMALL_TOOLS.contains(&(tab.as_str(), *panel)) {
+                        cells.div_ceil(if labels { 3 } else { 2 }) as f32 * 27.0
+                    } else {
+                        gallery_width
+                    };
+                    widths.push(ButtonSize { width, min_width: width });
                 }
                 PanelSize { buttons: widths }
             })
@@ -1934,12 +1941,23 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                         t.toolbar.lerp_to_gamma(t.border, 0.5),
                     );
                 }
+                let small = crate::workspace::SMALL_TOOLS.contains(&(tab.as_str(), *panel));
                 for (index, c) in gallery.iter().enumerate() {
                     let columns = if labels { 3 } else { 6 };
-                    let cell = Rect::from_min_size(
-                        pos2(button_x + (index % columns) as f32 * 27.0, top + 6.0 + (index / columns) as f32 * 23.0),
-                        vec2(24.0, 20.0),
-                    );
+                    let cell = if small {
+                        // Columns of three, top to bottom, as CADCraft's ribbon.
+                        let rows = if labels { 3 } else { 2 };
+                        let step = ((button_height - 4.0) / rows as f32).floor();
+                        Rect::from_min_size(
+                            pos2(button_x + (index / rows) as f32 * 27.0, top + 3.0 + (index % rows) as f32 * step),
+                            vec2(24.0, (step - 2.0).min(20.0)),
+                        )
+                    } else {
+                        Rect::from_min_size(
+                            pos2(button_x + (index % columns) as f32 * 27.0, top + 6.0 + (index / columns) as f32 * 23.0),
+                            vec2(24.0, 20.0),
+                        )
+                    };
                     let info = crate::render_workspace::interactive_command_info(app, c);
                     let resp = ui.interact(cell, ui.id().with(("cmd", c.id)), Sense::click_and_drag());
                     let active = ribbon_shows_pressed(app, c.id);
