@@ -32,7 +32,7 @@ pub fn tab_name(tab: &str) -> String {
     crate::i18n::tr_label(&cased).to_string()
 }
 
-pub const TABS: &[&str] = &["MODEL", "SURFACE", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW"];
+pub const TABS: &[&str] = &["MODEL", "MODIFY", "SURFACE", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW"];
 
 /// Reading order of the compact, three-column constraint gallery. Icons come from each spec.
 pub const CONSTRAINT_GALLERY: &[&str] = &[
@@ -52,7 +52,7 @@ pub struct CommandGroup {
 /// Optional headings for section lists. Unlisted commands retain their order at the end.
 pub fn groups(tab: &str, panel: &str) -> &'static [CommandGroup] {
     match (tab, panel) {
-        ("MODEL", "MODIFY") => &[
+        ("MODIFY", "MODIFY") => &[
             CommandGroup { label: "Edges", ids: &["solid.fillet", "solid.chamfer"] },
             CommandGroup {
                 label: "Faces",
@@ -106,29 +106,46 @@ const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.config
 pub const AGENT_ONLY: &[&str] = &["sketch.solve", "sketch.move3d"];
 
 pub const SECTIONS: &[Section] = &[
+    // MODEL: forms built from a sketch on the work plane (`forms.rs`). A form tool opens the
+    // sketch itself; there is no separate New Sketch here.
     Section {
         tab: "MODEL",
-        panel: "SKETCH",
-        promoted: 1,
-        ids: &["sketch.create", "sketch.edit", "sketch.line3d", "sketch.arc3d", "sketch.spline3d", "sketch.point3d"],
+        panel: "FORMS",
+        promoted: 5,
+        ids: &["form.extrusion", "form.blend", "form.revolve", "form.sweep", "form.swept_blend"],
     },
-    Section { tab: "MODEL", panel: "CREATE", promoted: 3, ids: &["solid.extrude", "solid.revolve", "solid.hole"] },
+    // One drop-down button (promoted 0) listing the void versions.
     Section {
         tab: "MODEL",
+        panel: "VOID FORMS",
+        promoted: 0,
+        ids: &["form.void.extrusion", "form.void.blend", "form.void.revolve", "form.void.sweep", "form.void.swept_blend"],
+    },
+    Section { tab: "MODEL", panel: "WORK PLANE", promoted: 2, ids: &["workplane.set", "workplane.show"] },
+    Section { tab: "MODEL", panel: "DRAW", promoted: 1, ids: &["model.line"] },
+    // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
+    Section { tab: "MODEL", panel: "FINISH EDITING", promoted: 1, ids: &["component.finish_edit"] },
+    // The earlier MODEL tools (features from existing sketches, edits, patterns, planes).
+    Section {
+        tab: "MODIFY",
+        panel: "CREATE",
+        promoted: 3,
+        ids: &["solid.extrude", "solid.revolve", "solid.hole", "sketch.edit", "sketch.line3d", "sketch.arc3d", "sketch.spline3d", "sketch.point3d"],
+    },
+    Section {
+        tab: "MODIFY",
         panel: "MODIFY",
         promoted: 4,
         ids: &["solid.fillet", "solid.chamfer", "solid.shell", "solid.press_pull", "sheet.convert"],
     },
     Section {
-        tab: "MODEL",
+        tab: "MODIFY",
         panel: "ARRANGE",
         promoted: 3,
         ids: &["solid.move", "solid.mirror", "solid.pattern.rectangular", "solid.align", "solid.pattern.circular", "solid.pattern.path"],
     },
-    Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
-    Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
-    // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
-    Section { tab: "MODEL", panel: "FINISH EDITING", promoted: 1, ids: &["component.finish_edit"] },
+    Section { tab: "MODIFY", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
+    Section { tab: "MODIFY", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
     // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
     Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
@@ -475,9 +492,9 @@ pub fn ribbon_family_label(family: &crate::sketch_families::Family) -> &'static 
 
 /// Registry placement → default ribbon destination, after explicit id overrides.
 pub const PLACEMENTS: &[(&str, &str, &str, &str)] = &[
-    ("SOLID", "CREATE", "MODEL", "CREATE"),
-    ("SOLID", "MODIFY", "MODEL", "MODIFY"),
-    ("SOLID", "CONSTRUCT", "MODEL", "CONSTRUCT"),
+    ("SOLID", "CREATE", "MODIFY", "CREATE"),
+    ("SOLID", "MODIFY", "MODIFY", "MODIFY"),
+    ("SOLID", "CONSTRUCT", "MODIFY", "CONSTRUCT"),
     ("SOLID", "ASSEMBLE", "ASSEMBLE", "JOINTS"),
     ("SOLID", "POSITION", "ASSEMBLE", "POSITION"),
     ("SOLID", "CONFIGURE", "MANAGE", "CONFIGURATIONS"),
@@ -496,7 +513,7 @@ pub const PLACEMENTS: &[(&str, &str, &str, &str)] = &[
     ("SHEET METAL", "CREATE", "SHEET METAL", "CREATE"),
     ("SHEET METAL", "MODIFY", "SHEET METAL", "FLAT"),
     ("WELDMENTS", "CREATE", "WELDMENTS", "CREATE"),
-    ("PLASTIC", "CREATE", "MODEL", "CREATE"),
+    ("PLASTIC", "CREATE", "MODIFY", "CREATE"),
     ("PLASTIC", "SETUP", "MANAGE", "RULES"),
     ("MESH", "MODIFY", "INSERT", "FILES"),
     ("RENDER", "SCENE", "RENDER CAMERA", "SHOTS"),
@@ -518,7 +535,7 @@ pub(crate) fn legacy_render_destination(c: &CommandSpec) -> Option<(&'static str
     // A few shared commands have a canonical home that differs from their first occurrence.
     let primary = match c.id {
         "sheet.manage_rules" => Some(("MANAGE", "RULES")),
-        "sheet.convert" => Some(("MODEL", "MODIFY")),
+        "sheet.convert" => Some(("MODIFY", "MODIFY")),
         "parameters.change" => Some(("MANAGE", "PARAMETERS")),
         "config.table" | "config.configure" => Some(("MANAGE", "CONFIGURATIONS")),
         _ => None,
@@ -553,9 +570,9 @@ pub fn legacy_panel(tab: &str, panel: &str) -> Option<(&'static str, &'static st
         return Some(("VIEW", "SELECT"));
     }
     PLACEMENTS.iter().find(|(t, p, ..)| *t == tab && *p == panel).map(|(_, _, t, p)| (*t, *p)).or(match (tab, panel) {
-        ("PLASTIC" | "SHEET METAL", "MODIFY") => Some(("MODEL", "MODIFY")),
+        ("PLASTIC" | "SHEET METAL", "MODIFY") => Some(("MODIFY", "MODIFY")),
         ("PLASTIC" | "SHEET METAL" | "SURFACE" | "MESH", "ASSEMBLE") => Some(("ASSEMBLE", "JOINTS")),
-        ("PLASTIC" | "SHEET METAL" | "SURFACE" | "MESH", "CONSTRUCT") => Some(("MODEL", "CONSTRUCT")),
+        ("PLASTIC" | "SHEET METAL" | "SURFACE" | "MESH", "CONSTRUCT") => Some(("MODIFY", "CONSTRUCT")),
         ("PLASTIC" | "SHEET METAL" | "SURFACE" | "MESH", "INSPECT") => Some(("INSPECT", "CHECK")),
         ("PLASTIC" | "SHEET METAL" | "SURFACE" | "MESH", "INSERT") => Some(("INSERT", "FILES")),
         ("MESH", "CREATE" | "PREPARE") => Some(("SURFACE", "CONVERT")),
@@ -632,6 +649,7 @@ pub const SPECIALTY_TABS: &[SpecialtyTab] =
 pub fn tab_icon(tab: &str) -> &'static str {
     match tab {
         "MODEL" => "extrude",
+        "MODIFY" => "fillet",
         "SURFACE" => "surface_extrude",
         "ASSEMBLE" => "joint",
         "INSERT" => "import",

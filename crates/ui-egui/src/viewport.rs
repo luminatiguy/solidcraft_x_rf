@@ -650,6 +650,7 @@ fn sketch_scene_key(app: &SolveApp, proj: &Proj) -> u64 {
     app.preferences.sketch_halo.hash(&mut h);
     // The grid previews the plane Create Sketch would take (#6975).
     previewed_sketch_plane(app).map(|p| [p.origin, p.x, p.y].map(|v| [v.x, v.y, v.z].map(f64::to_bits))).hash(&mut h);
+    crate::forms::shown_work_plane(app).map(|p| [p.origin, p.x, p.y].map(|v| [v.x, v.y, v.z].map(f64::to_bits))).hash(&mut h);
     // Conflicting curves in their own colour, or as before (#7244).
     app.preferences.sketch_conflict_colour.hash(&mut h);
     (std::sync::Arc::as_ptr(&crate::open_meshing::shown_world(app)) as usize).hash(&mut h);
@@ -1519,7 +1520,14 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
         2 => (false, true),
         _ => (true, true),
     };
-    let edge_col = if shaded { c4(tk.body_edge) } else { c4(tk.text) };
+    // Sketch mode shows the model in halftone: faded faces and edges (`forms::halftone`).
+    let halftone = crate::forms::halftone(app);
+    let edge_col = match (shaded, halftone) {
+        (true, false) => c4(tk.body_edge),
+        (true, true) => c4(tk.body_edge.gamma_multiply(0.3)),
+        (false, false) => c4(tk.text),
+        (false, true) => c4(tk.text.gamma_multiply(0.3)),
+    };
     // Shaded with hidden edges: edges behind the model show faintly.
     let hidden_edges = app.ui.visual_style == 3;
     // Vertex markers are an option (#7834), off by default.
@@ -1558,7 +1566,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     let mut instances = Instances::new(app, &shown, shaded);
     let mut thread_budget = solidcraft_engine::cosmetic_threads::Budget::default();
     for (b, slots) in shown.into_iter().zip(slots) {
-        let faded = body_faded(app, b, &active_bodies);
+        let faded = body_faded(app, b, &active_bodies) || halftone;
         let identity = match appearance.keys.get(&b.name).copied() {
             Some(key) => key,
             None => {
@@ -1828,7 +1836,12 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
     }
     let mut fill_budget = 131_072;
     // The open sketch's plane in the model this frame shows.
-    let sketch_plane = s.active_sketch.and_then(|id| st.sketch(id)).map(|ss| ss.plane).or_else(|| previewed_sketch_plane(app));
+    let sketch_plane = s
+        .active_sketch
+        .and_then(|id| st.sketch(id))
+        .map(|ss| ss.plane)
+        .or_else(|| previewed_sketch_plane(app))
+        .or_else(|| crate::forms::shown_work_plane(app));
     // An open sketch has its grid whatever the Grid switch says, unless the sketch's own Sketch
     // Grid option (Sketch panel) is off (#9147); outside a sketch that option is never off.
     if (sketch_plane.is_some() || app.ui.show_grid) && !active_view(app).hide_grid {
@@ -1907,7 +1920,9 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
         let active = s.active_sketch == Some(sid);
         // Closed profiles are shaded (lifted off a face they may lie on).
         let lift = ss.plane.normal() * 0.01;
-        let profiles = if app.session.visibility.hidden_profiles.contains(&sid) || ss.sketch.view.hide_profile { &[][..] } else { &ss.profiles[..] };
+        let inactive = s.active_sketch.is_some() && !active;
+        let profiles =
+            if inactive || app.session.visibility.hidden_profiles.contains(&sid) || ss.sketch.view.hide_profile { &[][..] } else { &ss.profiles[..] };
         let profile_fill = sc.color(c4(tk.profile_fill));
         for (index, _) in profiles.iter().enumerate() {
             let display = crate::sketch_display::profile_region(app, sid, index, &ss.plane, proj);
@@ -1937,7 +1952,14 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
             let conflicting = owners.get(k).is_some_and(|&curve| conflict.curve(curve));
             let segs = sketch_segments(&pts, sketch_line_mode(col, cons), unit);
             let haloed = app.preferences.sketch_halo && !active && col != colors::SKETCH_PROJECTED && col != colors::SKETCH_LOST;
-            let colour = if conflicting { c4(tk.sketch_conflict) } else { sketch_color(&tk, col) };
+            let mut colour = if conflicting { c4(tk.sketch_conflict) } else { sketch_color(&tk, col) };
+            // Another sketch while one is open: inactive, in halftone.
+            if s.active_sketch.is_some() && !active {
+                for c in colour.iter_mut().take(3) {
+                    *c = ((f32::from(*c) * 0.4) + 128.0 * 0.6) as u8;
+                }
+                colour[3] = (f32::from(colour[3]) * 0.45) as u8;
+            }
             strokes.push((segs, sc.color(colour), if cons { 1.2 } else { 2.0 }, haloed));
         }
         // Active sketches retain their existing through-body display. Inactive sketches
@@ -2148,7 +2170,7 @@ fn selected_plane(app: &SolveApp) -> Option<Plane> {
 }
 
 /// Origin or construction plane `name`.
-fn named_plane(app: &SolveApp, name: &str) -> Option<Plane> {
+pub(crate) fn named_plane(app: &SolveApp, name: &str) -> Option<Plane> {
     solidcraft_engine::view::construction_planes(&app.session)
         .into_iter()
         .find(|(_, n, _)| n == name)
@@ -2945,6 +2967,10 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
     }
     surf.sort_by(|a, b| a.0.total_cmp(&b.0));
     hits.extend(surf.into_iter().map(|x| x.1));
+    // Sketch mode: only what is drawn in the open sketch can be picked (`forms::isolating`).
+    if crate::forms::isolating(app) {
+        hits.retain(|h| crate::forms::own_hit(app, h));
+    }
     hits
 }
 

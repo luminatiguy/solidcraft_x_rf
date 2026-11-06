@@ -170,6 +170,9 @@ mod extrude_auto_to_object_tests;
 mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
+mod forms;
+#[cfg(test)]
+mod forms_tests;
 mod file_picker;
 pub(crate) mod frame_watch;
 #[cfg(test)]
@@ -618,6 +621,8 @@ pub struct SolveApp {
     /// A feature started from a sketch while the marker rolls back, and that sketch: it starts
     /// once the marker is back.
     pub start_after_roll: Option<(String, u64)>,
+    /// The MODEL tab's form tools: the work plane and the form being sketched (`forms.rs`).
+    pub(crate) forms: forms::State,
     /// The ribbon tab before the current `start` moved it to the command's home tab. A command
     /// that starts nothing (refused with a parameter or status error) puts it back (#10540).
     pub(crate) command_tab_before_start: Option<String>,
@@ -861,6 +866,7 @@ impl SolveApp {
             deferred: None,
             deferred_queue: Vec::new(),
             start_after_roll: None,
+            forms: forms::State::default(),
             command_tab_before_start: None,
             timeline_playback: None,
             delete_check: None,
@@ -1621,6 +1627,10 @@ impl SolveApp {
         if self.file_load.busy() || self.file_picker.is_some() {
             return;
         }
+        // The MODEL tab's form tools, the work plane and Model Line (`forms.rs`).
+        if forms::start_hook(self, id) {
+            return;
+        }
         if id != "occurrence.move" {
             joint_handles::close(self);
         }
@@ -2350,12 +2360,19 @@ impl SolveApp {
     /// The camera goes where the "When a sketch ends" preference says (#7038); by default it
     /// stays where it is, however the sketch is left.
     pub fn finish_sketch(&mut self) {
+        // A form tool's sketch goes on to the form's next sketch or its feature window.
+        if forms::intercept_finish(self) {
+            return;
+        }
         self.leave_sketch("sketch.finish");
     }
 
     /// Cancel Sketch (#3838): leave the sketch without its changes. When the command refuses (the
     /// undo history no longer leads back to where the sketch was opened), the sketch stays open.
     pub fn cancel_sketch(&mut self) {
+        if forms::intercept_cancel(self) {
+            return;
+        }
         self.leave_sketch("sketch.cancel");
     }
 
@@ -2947,6 +2964,7 @@ impl SolveApp {
         self.drain_control(ctx);
         self.follow_view_request(true);
         self.return_from_extrude_view();
+        forms::tick(self, ctx);
         agent_cursor::step(self, ctx);
         browser::eye_drag_frame(self, ctx);
         if !self.synthetic.is_empty() {
