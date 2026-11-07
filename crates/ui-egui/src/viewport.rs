@@ -2157,6 +2157,19 @@ pub(crate) fn c4(c: Color32) -> [u8; 4] {
 }
 
 /// Origin planes and axes currently shown, sized for the view: (name, normal, quad).
+/// The boundary edges of a body's face, in world space (Show Work Plane outlines them).
+pub(crate) fn face_edges(app: &SolveApp, body: &str, index: usize) -> Vec<Vec<Vec3>> {
+    let st = crate::open_meshing::shown_world(app);
+    let Some(b) = st.bodies.iter().find(|b| b.name == body) else { return Vec::new() };
+    let m = drawn_mesh(app, b);
+    m.edges
+        .iter()
+        .enumerate()
+        .filter(|(ei, _)| m.edge_faces.get(*ei).is_some_and(|fs| fs.iter().any(|f| *f as usize == index)))
+        .map(|(_, e)| e.clone())
+        .collect()
+}
+
 pub fn origin_planes(app: &SolveApp) -> Vec<(&'static str, Vec3, [Vec3; 4])> {
     if !app.origin_visible() {
         return Vec::new();
@@ -2322,7 +2335,7 @@ pub fn construction_quads(app: &SolveApp) -> Vec<(String, Vec3, [Vec3; 4])> {
     let h = origin_size(app.cam.half_height()) * 1.2;
     solidcraft_engine::view::construction_planes(&app.session)
         .into_iter()
-        .filter(|(_, n, _)| app.session.construction_visible(n))
+        .filter(|(_, n, _)| app.session.construction_visible(n) && !crate::reference_planes::is_reference(n))
         .map(|(_, name, pl)| {
             let (o, x, y) = (pl.origin, pl.x * h, pl.y * h);
             (name, pl.normal(), [o - x - y, o + x - y, o + x + y, o - x + y])
@@ -2998,6 +3011,10 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
         }
     }
     surf.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // A reference plane seen edge-on is a line: picked near it, before the surfaces.
+    if let Some(h) = crate::reference_planes::hit(app, proj, pos) {
+        hits.push(h);
+    }
     hits.extend(surf.into_iter().map(|x| x.1));
     // Sketch mode: only what is drawn in the open sketch can be picked (`forms::isolating`).
     if crate::forms::isolating(app) {
@@ -3764,7 +3781,7 @@ fn hover_drawn(hover: &Option<Hit>) -> String {
 
 /// The body the current hover actually selects, after the active dialog's filter.
 fn hovered_body(app: &SolveApp) -> Option<String> {
-    if app.tool.is_some() {
+    if app.tool.is_some() || crate::forms::picking_plane(app) {
         return None;
     }
     let hit = app.viewport.hover.as_ref()?;
@@ -4716,6 +4733,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         tool_hover(app, &hits).map(|h| (h, None))
     } else if let Some((hit, sel)) = corner {
         Some((hit, Some(sel)))
+    } else if crate::forms::picking_plane(app) {
+        // Set Work Plane: the plane or flat face under the pointer lights up on its own.
+        crate::forms::plane_candidate(app, &hits).map(|(h, s)| (h, Some(s)))
     } else {
         candidate(app, &hits).map(|(h, s)| (h, Some(s)))
     };
@@ -5448,6 +5468,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::canvas::show(app, ui, &painter, &proj);
     crate::sketch_tools::show(app, ui, &painter, &proj);
     crate::forms::paint_open_ends(app, &painter, &proj);
+    crate::reference_planes::paint(app, &painter, &proj);
+    crate::reference_planes::paint_work_plane_edges(app, &painter, &proj);
+    crate::reference_planes::paint_drawing(app, &painter, &proj, ui.ctx().pointer_hover_pos());
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);
     crate::sketch_dims::show(app, ui, &proj);

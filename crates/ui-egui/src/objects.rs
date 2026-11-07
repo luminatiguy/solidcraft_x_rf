@@ -66,6 +66,8 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
     let st = crate::open_meshing::session_world(&app.session);
     let Some(b) = st.body(body) else { return false };
     let Some(f) = app.session.doc.feature(b.feature) else { return false };
+    let feature = f.id;
+    let reopen = matches!(f.kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. });
     let sketch = match &f.kind {
         FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } => Some(sketch.0),
         FeatureKind::Sweep { path_sketch, .. } => Some(path_sketch.0),
@@ -75,7 +77,8 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
     drop(st);
     let Some(sketch) = sketch else { return false };
     app.edit_feature(sketch);
-    app.set_status("Editing the object's sketch: change it, then Finish; the object follows", false);
+    app.forms.after_edit = reopen.then_some((sketch, feature, false));
+    app.set_status("Editing the object's sketch: change it, then Finish; the depth comes next", false);
     true
 }
 

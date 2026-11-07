@@ -741,6 +741,11 @@ impl FileAction {
     }
 }
 
+/// The File menu, dropped from the menu bar.
+pub(crate) fn file_menu_public(app: &mut SolveApp, ctx: &egui::Context) {
+    file_menu(app, ctx);
+}
+
 fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
     let id = egui::Id::new("sc_file_menu");
     if !ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false)) {
@@ -749,7 +754,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
     let mut close = false;
     let resp = Container::new(ctx, Surface::Popup)
         .area(egui::Id::new("sc_file_area"))
-        .fixed_pos(pos2(ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0), APP_BAR_HEIGHT))
+        .fixed_pos(pos2(
+            ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0),
+            ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_y"))).unwrap_or(APP_BAR_HEIGHT),
+        ))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             crate::ui_kit::Menu::show_frame(ui, crate::ui_kit::Menu::frame(), |ui| {
@@ -1565,7 +1573,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         painter.rect_filled(
             Rect::from_min_size(ws.left_top() + vec2(accent_inset, 0.0), vec2((ws.width() - 2.0 * accent_inset).max(0.0), t.space_3)),
             egui::CornerRadius { nw: 0, ne: 0, sw: if floating { t.radius_sm / 2 } else { 0 }, se: if floating { t.radius_sm / 2 } else { 0 } },
-            if crate::render_workspace::active(app) { crate::theme::TabAccent::current(ui.ctx()).color } else { t.accent },
+            if crate::render_workspace::active(app) {
+                crate::theme::TabAccent::current(ui.ctx()).color
+            } else if crate::drawing_ws::active(app) {
+                crate::drawing_ws::ACCENT
+            } else {
+                t.accent
+            },
         );
         if !floating {
             t.secondary_line(&painter, [ws.right_top(), ws.right_bottom()], t.border);
@@ -1574,7 +1588,8 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if render {
             crate::ui_kit::StageBar::workspace(ui, ws, "ws_render", app.tr("ui.render"), app.tr("ui.ribbon_workspace"));
         } else {
-            let workspace_icon = if render { "ws_render" } else { "ws_design" };
+            let drawing = crate::drawing_ws::active(app);
+            let workspace_icon = if drawing { "ws_drawing" } else { "ws_design" };
             icons::paint_icon(
                 &painter,
                 Rect::from_center_size(pos2(ws.center().x, ws.top() + if labels { 39.0 } else { 25.0 }), vec2(30.0, 30.0)),
@@ -1584,7 +1599,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             ribbon_text(
                 ui,
                 pos2(ws.center().x, ws.top() + if labels { 69.0 } else { 50.0 }),
-                app.tr(if render { "ui.render" } else { "ui.design" }),
+                if drawing { "Drawing" } else { app.tr("ui.design") },
                 t.font_button,
                 t.text,
                 true,
@@ -1609,6 +1624,16 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         crate::scenario::publish_target("ribbon:workspace", ws);
         if render {
             crate::render_ui::stage_bar(app, ui, cards.ribbon);
+            return;
+        }
+        if crate::drawing_ws::active(app) {
+            // The Drawing workspace's own ribbon: one tab, its tools still to come.
+            let tabs = Rect::from_min_max(pos2(ribbon_left, r.top()), pos2(r.right(), r.top() + TAB_ROW_HEIGHT));
+            let tab = Rect::from_min_size(tabs.min + vec2(t.space_8, 4.0), vec2(84.0, TAB_ROW_HEIGHT - 8.0));
+            painter.rect_filled(tab, t.radius_sm, crate::drawing_ws::ACCENT.gamma_multiply(0.35));
+            ribbon_text(ui, tab.center(), "Drawing", t.font_button, t.text, true);
+            let body = Rect::from_min_max(pos2(ribbon_left, tabs.bottom()), r.max);
+            ribbon_text(ui, body.center(), "Drawing tools will appear here", t.font_small, t.text_dim, true);
             return;
         }
         ribbon_tabs(app, ui, Rect::from_min_max(pos2(ribbon_left, r.top()), pos2(r.right(), r.top() + TAB_ROW_HEIGHT)));

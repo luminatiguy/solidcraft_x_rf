@@ -127,6 +127,9 @@ pub struct State {
     open_ends: Vec<Vec2>,
     /// Clear the selection next frame (what the click that set the work plane selected).
     clear_selection: bool,
+    /// An object's sketch opened by a double click: (sketch, the feature made from it, the
+    /// sketch was seen open). Finishing it opens the feature's window (the depth, the angle).
+    pub after_edit: Option<(u64, u64, bool)>,
 }
 
 const XY: &str = "XY";
@@ -139,6 +142,10 @@ fn status(app: &mut SolveApp, text: impl Into<String>, error: bool) {
 pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     if id == "workplane.set" {
         set_work_plane(app);
+        return true;
+    }
+    if id == "workplane.reference" {
+        crate::reference_planes::start(app);
         return true;
     }
     if id == "workplane.show" {
@@ -178,6 +185,9 @@ pub fn pressed(app: &SolveApp, id: &str) -> bool {
     }
     if id == "workplane.set" {
         return app.forms.picking_work_plane;
+    }
+    if id == "workplane.reference" {
+        return app.reference_planes.drawing;
     }
     app.forms.session.as_ref().is_some_and(|s| s.form.command(s.void) == id)
 }
@@ -481,6 +491,7 @@ pub fn intercept_finish(app: &mut SolveApp) -> bool {
 /// `cancel_sketch`'s hook: cancelling a form's sketch drops the whole form, with the sketches it
 /// made before this one.
 pub fn intercept_cancel(app: &mut SolveApp) -> bool {
+    app.forms.after_edit = None;
     if app.forms.leaving || app.forms.session.is_none() {
         return false;
     }
@@ -852,6 +863,22 @@ fn apply_fill(app: &mut SolveApp) -> bool {
     true
 }
 
+/// Whether Set Work Plane or Orient to a plane is waiting for a pick.
+pub fn picking_plane(app: &SolveApp) -> bool {
+    app.forms.picking_work_plane || app.forms.picking_view_plane
+}
+
+/// The plane or flat face a click would take while picking a plane: lit under the pointer.
+pub fn plane_candidate(app: &SolveApp, hits: &[crate::viewport::Hit]) -> Option<(crate::viewport::Hit, Sel)> {
+    hits.iter().find_map(|h| match h {
+        crate::viewport::Hit::Plane { name, .. } => Some((h.clone(), Sel::Plane { name: name.clone() })),
+        crate::viewport::Hit::Face { body, index, point } => {
+            Some(Sel::Face { body: body.clone(), index: *index, point: *point }).filter(|s| plane_pick(app, s)).map(|s| (h.clone(), s))
+        }
+        _ => None,
+    })
+}
+
 // ---- Every frame --------------------------------------------------------------------------
 
 /// Once a frame: Set Work Plane's pick, the feature window waiting to be filled, and a form
@@ -859,6 +886,20 @@ fn apply_fill(app: &mut SolveApp) -> bool {
 pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if std::mem::take(&mut app.forms.clear_selection) {
         let _ = app.session.execute("select.clear", &json!({}));
+    }
+    if app.reference_planes.drawing {
+        let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || app.dialog.is_some() || app.session.active_sketch.is_some() {
+            app.reference_planes = Default::default();
+            status(app, "Cancelled", false);
+        } else if let Some(pos) = click
+            && let Some(rect) = app.viewport.rect.filter(|r| r.contains(pos))
+        {
+            let proj = crate::viewport::projection(app, rect);
+            crate::reference_planes::click(app, &proj, pos);
+            app.forms.clear_selection = true;
+        }
+        ctx.request_repaint();
     }
     if app.forms.picking_work_plane || app.forms.picking_view_plane {
         let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
@@ -876,13 +917,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             // on a face selects its body by default).
             let proj = crate::viewport::projection(app, rect);
             let hits = crate::viewport::pick(app, &proj, pos);
-            let found = hits.iter().find_map(|h| match h {
-                crate::viewport::Hit::Plane { name, .. } => Some(Sel::Plane { name: name.clone() }),
-                crate::viewport::Hit::Face { body, index, point } => {
-                    Some(Sel::Face { body: body.clone(), index: *index, point: *point }).filter(|s| plane_pick(app, s))
-                }
-                _ => None,
-            });
+            let found = plane_candidate(app, &hits).map(|(_, s)| s);
             match found {
                 Some(sel) if app.forms.picking_view_plane => orient_to(app, sel),
                 Some(sel) => {
@@ -902,6 +937,19 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             } else {
                 adopt_work_plane(app, sel);
             }
+        }
+    }
+    if let Some((sketch, feature, seen)) = app.forms.after_edit {
+        if app.session.active_sketch == Some(sketch) {
+            app.forms.after_edit = Some((sketch, feature, true));
+        } else if seen && app.session.active_sketch.is_none() && app.dialog.is_none() && app.deferred.is_none() {
+            app.forms.after_edit = None;
+            if app.session.doc.feature(feature).is_some() {
+                app.edit_feature(feature);
+                status(app, "The sketch is updated; change the depth (or angle) here, then OK", false);
+            }
+        } else if seen || app.session.doc.feature(feature).is_none() {
+            app.forms.after_edit = None;
         }
     }
     if let Some(mut fill) = app.forms.fill.clone() {

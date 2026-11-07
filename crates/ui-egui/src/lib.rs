@@ -13,6 +13,7 @@ pub mod access;
 pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
+mod appshell;
 pub mod bidi;
 pub mod blur;
 pub mod bom_panel;
@@ -114,6 +115,7 @@ mod look_at_tests;
 mod manage_dialogs_tests;
 mod material_card_review;
 mod material_editor;
+mod reference_planes;
 mod silhouette;
 
 #[cfg(test)]
@@ -631,6 +633,8 @@ pub struct SolveApp {
     /// The sketch tools after CADCraft's: the one running and the snap switches (`cad`).
     pub(crate) cad: cad::State,
     pub(crate) drawing_ws: drawing_ws::State,
+    pub(crate) shell_ui: appshell::State,
+    pub(crate) reference_planes: reference_planes::State,
     /// The ribbon tab before the current `start` moved it to the command's home tab. A command
     /// that starts nothing (refused with a parameter or status error) puts it back (#10540).
     pub(crate) command_tab_before_start: Option<String>,
@@ -877,6 +881,8 @@ impl SolveApp {
             forms: forms::State::default(),
             cad: cad::State::default(),
             drawing_ws: drawing_ws::State::default(),
+            shell_ui: appshell::State::default(),
+            reference_planes: reference_planes::State::default(),
             command_tab_before_start: None,
             timeline_playback: None,
             delete_check: None,
@@ -1066,6 +1072,7 @@ impl SolveApp {
             "perspective": self.ui.perspective,
             "auto_ortho_faces": self.ui.auto_ortho_faces,
             "pick_whole_objects": self.ui.pick_bodies,
+            "app_shell": appshell::prefs(self),
             "auto_project": self.session.auto_project,
             "visual_style": self.ui.visual_style,
             "browser_collapsed": self.tree.collapsed,
@@ -1128,6 +1135,9 @@ impl SolveApp {
         // Whole objects by default: an older saved `pick_bodies` (faces) is not read.
         if let Some(b) = flag("pick_whole_objects") {
             self.ui.pick_bodies = b;
+        }
+        if let Some(shell) = v.get("app_shell") {
+            appshell::load_prefs(self, shell);
         }
         if let Some(a) = flag("auto_project") {
             self.session.auto_project = a;
@@ -3135,7 +3145,8 @@ impl SolveApp {
         self.poll_delete_check(ui.ctx());
         timeline::tick_playback(self, ui.ctx());
         if !self.embedded {
-            toolbar::app_bar(self, ui);
+            appshell::app_bar(self, ui);
+            appshell::menu_bar(self, ui);
         }
         issue_report::CadInput::block(self, ui, report_input);
         file_load::show(self, ui.ctx());
@@ -3166,12 +3177,15 @@ impl SolveApp {
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);
-        let show_timeline = self.ui.show_timeline && !render_workspace::active(self) && !self.preferences.history_in_browser;
+        let show_timeline =
+            self.ui.show_timeline && !render_workspace::active(self) && !drawing_ws::active(self) && !self.preferences.history_in_browser;
         let left_timeline = show_timeline && self.preferences.timeline_left;
         timeline_left::animate_folds(self, ui.ctx());
         if !floating && !self.embedded {
             toolbar::toolbar(self, ui);
+            appshell::tabs_bar(self, ui);
         }
+        appshell::properties(self, ui.ctx());
         theme::TabAccent::publish(self, ui.ctx());
         browser::publish_row_prefs(self, ui.ctx());
         if !floating {

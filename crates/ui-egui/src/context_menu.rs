@@ -426,9 +426,6 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
                         .key(if rendering { "current" } else { "" })
                         .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
                 ];
-                for (w, icon) in [("Animation", "ws_animate"), ("Simulation", ""), ("Manufacture", "")] {
-                    v.push(act("ui.workspace", w, icon).key("coming later").on(false));
-                }
                 v.push(
                     act("ui.workspace", "Drawing", "ws_drawing")
                         .with(json!({"workspace":"drawing"}))

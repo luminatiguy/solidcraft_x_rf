@@ -85,13 +85,18 @@ enum Mirror {
 }
 
 fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity: f32, ink: Option<Color32>, mirror: Mirror) {
-    // The sketch tools' icons are CADCraft's, drawn in code (`cad_icons`).
-    if let Some(icon) = crate::cad_icons::by_name(name) {
+    // The sketch tools' icons, and the icons SolidCraft and CADCraft both have (undo, redo,
+    // save, …), are CADCraft's, drawn in code in the theme's colours (`cad_icons`).
+    if let Some(icon) = crate::cad_icons::by_name(name).or_else(|| crate::cad_icons::shared(name)) {
         let side = r.width().min(r.height());
-        crate::cad_icons::paint(p, Rect::from_center_size(r.center(), egui::vec2(side, side)), icon, opacity < 0.6);
+        crate::cad_icons::paint_themed(p, Rect::from_center_size(r.center(), egui::vec2(side, side)), icon, opacity, ink);
         return;
     }
     let ctx = p.ctx();
+    if name == "ws_drawing" {
+        drawing_workspace_icon(p, r, opacity);
+        return;
+    }
     if name == "style_hidden_line" {
         let dark = dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode);
         hidden_line_icon(p, r, dark, opacity, ink);
@@ -100,6 +105,26 @@ fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity:
     let resolved = icon_svg::resolve(name);
     let look = Look::themed(dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), resolved.accent, crate::theme::vision());
     paint_resolved(p, r, resolved, look, opacity, ink.map_or(Finish::Artwork, Finish::Ink), mirror);
+}
+
+/// The Drawing workspace: a sheet with a title strip and two views, in the workspace's sea green.
+fn drawing_workspace_icon(p: &Painter, r: Rect, opacity: f32) {
+    let side = r.width().min(r.height());
+    let c = r.center();
+    let accent = crate::drawing_ws::ACCENT.gamma_multiply(opacity);
+    let sheet = Rect::from_center_size(c, egui::vec2(side * 0.9, side * 0.68));
+    let w = (side * 0.07).max(1.2);
+    p.rect_filled(sheet, side * 0.06, accent.gamma_multiply(0.18));
+    p.rect_stroke(sheet, side * 0.06, egui::Stroke::new(w, accent), egui::StrokeKind::Inside);
+    let strip = sheet.bottom() - sheet.height() * 0.24;
+    p.line_segment([egui::pos2(sheet.left() + w, strip), egui::pos2(sheet.right() - w, strip)], egui::Stroke::new(w * 0.8, accent));
+    let thin = egui::Stroke::new(w * 0.8, accent);
+    let left = Rect::from_center_size(
+        egui::pos2(sheet.left() + sheet.width() * 0.3, sheet.top() + sheet.height() * 0.38),
+        egui::vec2(side * 0.22, side * 0.2),
+    );
+    p.rect_stroke(left, 0.0, thin, egui::StrokeKind::Middle);
+    p.circle_stroke(egui::pos2(sheet.left() + sheet.width() * 0.7, sheet.top() + sheet.height() * 0.38), side * 0.11, thin);
 }
 
 /// The Hidden line visual style: a cube seen from above a corner, its visible edges only, drawn

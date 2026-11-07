@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 
 use crate::SolveApp;
 
+/// The Drawing workspace's identity colour (sea green, beside Design's blue and Render's pink).
+pub const ACCENT: Color32 = Color32::from_rgb(0, 170, 160);
+
 /// The views a cell can show, as (command value, label).
 pub const VIEWS: [(&str, &str); 8] = [
     ("front", "Front"),
@@ -36,6 +39,10 @@ pub struct State {
     preview: Option<Preview>,
     key: Option<String>,
     error: Option<String>,
+    /// The drawing scale (paper / model); `None` fits the views (Auto).
+    pub scale: Option<f64>,
+    /// The sheet size, an index into [`SHEETS`].
+    pub sheet: usize,
     /// The sheet view: zoom (1 = the whole sheet fits) and pan in screen points.
     zoom: f32,
     pan: Vec2,
@@ -54,13 +61,31 @@ impl Default for State {
             error: None,
             zoom: 1.0,
             pan: Vec2::ZERO,
+            scale: None,
+            sheet: 1,
         }
     }
+}
+
+/// Sheet sizes (landscape, mm).
+pub const SHEETS: [(&str, f64, f64); 5] =
+    [("A4", 297.0, 210.0), ("A3", 420.0, 297.0), ("A2", 594.0, 420.0), ("A1", 841.0, 594.0), ("A0", 1189.0, 841.0)];
+
+/// Preferred scales offered in the list (paper / model).
+const SCALES: [f64; 15] = [10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002];
+
+fn scale_label(k: f64) -> String {
+    let n = |v: f64| {
+        let r = (v * 1000.0).round() / 1000.0;
+        if (r - r.round()).abs() < 1e-9 { format!("{}", r.round()) } else { format!("{r}") }
+    };
+    if k >= 1.0 { format!("{}:1", n(k)) } else { format!("1:{}", n(1.0 / k)) }
 }
 
 struct Preview {
     size: (f64, f64),
     scale: String,
+    fit: String,
     paths: Vec<(bool, Vec<[f64; 2]>)>,
     texts: Vec<([f64; 2], f64, String)>,
 }
@@ -100,7 +125,9 @@ pub fn params(app: &SolveApp) -> Value {
         .map(|c| json!({"view": VIEWS.get(c.view).map_or("none", |v| v.0), "style": if c.hidden_line {"hidden_line"} else {"wireframe"}}))
         .collect();
     let up = if matches!(app.cam.up, solidcraft_engine::render::UpAxis::Y) { "y" } else { "z" };
-    json!({"rows": st.rows, "cols": st.cols, "views": views, "title": st.title, "up": up})
+    let (_, w, h) = SHEETS.get(st.sheet).copied().unwrap_or(SHEETS[1]);
+    let scale = st.scale.map_or(json!("auto"), |k| json!(k));
+    json!({"rows": st.rows, "cols": st.cols, "views": views, "title": st.title, "up": up, "scale": scale, "sheet": [w, h]})
 }
 
 fn refresh(app: &mut SolveApp) {
@@ -144,7 +171,13 @@ fn refresh(app: &mut SolveApp) {
                         .collect()
                 })
                 .unwrap_or_default();
-            app.drawing_ws.preview = Some(Preview { size, scale: v["scale"].as_str().unwrap_or("").to_string(), paths, texts });
+            app.drawing_ws.preview = Some(Preview {
+                size,
+                scale: v["scale"].as_str().unwrap_or("").to_string(),
+                fit: v["fit"].as_str().unwrap_or("").to_string(),
+                paths,
+                texts,
+            });
             app.drawing_ws.error = None;
         }
         Err(e) => {
@@ -213,6 +246,43 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             ui.label("Title");
             ui.text_edit_singleline(&mut app.drawing_ws.title);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Sheet");
+                let mut sheet = app.drawing_ws.sheet;
+                egui::ComboBox::from_id_salt("drawing_sheet_size").width(70.0).selected_text(SHEETS.get(sheet).map_or("", |s| s.0)).show_ui(
+                    ui,
+                    |ui| {
+                        for (k, (name, w, h)) in SHEETS.iter().enumerate() {
+                            ui.selectable_value(&mut sheet, k, format!("{name}  {w:.0}×{h:.0}"));
+                        }
+                    },
+                );
+                app.drawing_ws.sheet = sheet;
+            });
+            ui.horizontal(|ui| {
+                ui.label("Scale");
+                let fit = app.drawing_ws.preview.as_ref().map(|p| p.fit.clone()).unwrap_or_default();
+                let mut scale = app.drawing_ws.scale;
+                let shown = scale.map_or_else(|| format!("Auto ({fit})"), scale_label);
+                egui::ComboBox::from_id_salt("drawing_scale").width(100.0).selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut scale, None, format!("Auto ({fit})"));
+                    for k in SCALES {
+                        ui.selectable_value(&mut scale, Some(k), scale_label(k));
+                    }
+                });
+                // Any other scale: 1 : n (or n : 1 above 1:1).
+                let mut n = scale.map_or(1.0, |k| if k >= 1.0 { k } else { 1.0 / k });
+                let big = scale.is_some_and(|k| k > 1.0);
+                ui.label(if big { "" } else { "1 :" });
+                if ui.add(egui::DragValue::new(&mut n).range(1.0..=10000.0).speed(1.0).max_decimals(2)).changed() {
+                    scale = Some(if big { n } else { 1.0 / n });
+                }
+                if big {
+                    ui.label(": 1");
+                }
+                app.drawing_ws.scale = scale;
+            });
             ui.add_space(6.0);
             ui.label("Grid");
             let (mut rows, mut cols) = (app.drawing_ws.rows, app.drawing_ws.cols);

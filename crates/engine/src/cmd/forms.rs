@@ -50,6 +50,9 @@ fn set_work_plane(_: &mut Session, _: &Value) -> Result<Value> {
 fn show_work_plane(_: &mut Session, _: &Value) -> Result<Value> {
     interactive("workplane.show", "view.grid")
 }
+fn reference_plane(_: &mut Session, _: &Value) -> Result<Value> {
+    interactive("workplane.reference", "construct.plane.three_points")
+}
 fn model_line(_: &mut Session, _: &Value) -> Result<Value> {
     interactive("model.line", "sketch.create and sketch.line")
 }
@@ -137,6 +140,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .doc_only()
         .params("interactive: pick an origin or construction plane or any planar face; the form tools and Model Line sketch on it"),
+    CommandSpec::new("workplane.reference", "Reference Plane", reference_plane)
+        .icon("plane_perpendicular")
+        .noundo()
+        .doc_only()
+        .params("interactive: two clicks draw a reference plane through them, square to the view; it shows as a dashed line where it is seen edge-on and can be the work plane"),
     CommandSpec::new("workplane.show", "Show Work Plane", show_work_plane)
         .icon("eye")
         .noundo()

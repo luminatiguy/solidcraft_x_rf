@@ -17,7 +17,7 @@ const CMD: &str = "drawing.export";
 pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Export Drawing", export)
     .icon("export")
     .noundo()
-    .params("rows?: 1..4 (2); cols?: 1..4 (2); views?: [{view: front|back|left|right|top|bottom|iso|none, style?: wireframe|hidden_line}] row by row from the top left (default 2×2: front, right / top, iso); sheet?: [width, height] mm (420×297, A3); title?: text; up?: z|y (world up axis, default z); format?: dwg|dxf (by the path's extension, else dwg); path?: file; preview?: true returns the sheet's lines instead of writing. Visible bodies only, one common scale for every view.")];
+    .params("rows?: 1..4 (2); cols?: 1..4 (2); views?: [{view: front|back|left|right|top|bottom|iso|none, style?: wireframe|hidden_line}] row by row from the top left (default 2×2: front, right / top, iso); sheet?: [width, height] mm (420×297, A3); title?: text; up?: z|y (world up axis, default z); scale?: auto|ratio (paper/model: 0.5 is 1:2, 2 is 2:1; auto fits the largest preferred scale); format?: dwg|dxf (by the path's extension, else dwg); path?: file; preview?: true returns the sheet's lines instead of writing. Visible bodies only, one common scale for every view.")];
 
 /// Largest grid.
 const MAX_CELLS: usize = 4;
@@ -151,6 +151,8 @@ pub struct Sheet {
     pub layers: Vec<DxfLayer>,
     pub entities: Vec<DxfEntity>,
     pub scale: f64,
+    /// The scale that fits every view in its cell.
+    pub fit: f64,
     pub size: (f64, f64),
 }
 
@@ -204,7 +206,15 @@ fn compose(s: &Session, p: &Value) -> Result<Sheet> {
             views.push(None);
         }
     }
-    let scale = nice_scale(if scale.is_finite() { scale } else { 1.0 });
+    let fit = nice_scale(if scale.is_finite() { scale } else { 1.0 });
+    let scale = match p.get("scale") {
+        None => fit,
+        Some(Value::String(t)) if t == "auto" => fit,
+        Some(v) => v
+            .as_f64()
+            .filter(|k| k.is_finite() && (1e-4..=1e4).contains(k))
+            .ok_or_else(|| bad(CMD, "scale must be auto or a ratio 0.0001..10000 (0.5 is 1:2)"))?,
+    };
     let mut entities = Vec::new();
     let line = |layer: &str, a: Vec2, b: Vec2| DxfEntity { layer: layer.into(), shape: DxfShape::Line(a, b) };
     let rect = |x0: f64, y0: f64, x1: f64, y1: f64| DxfEntity {
@@ -233,7 +243,7 @@ fn compose(s: &Session, p: &Value) -> Result<Sheet> {
         entities.push(text(Vec2::new(cx, (bottom - LABEL + 1.0).max(area_y0 + 1.0)), 3.5, view_name(v).to_string()));
     }
     let layers = vec![DxfLayer::new("VISIBLE", 7), DxfLayer::new("FRAME", 7), DxfLayer::new("TEXT", 7)];
-    Ok(Sheet { layers, entities, scale, size: (w, h) })
+    Ok(Sheet { layers, entities, scale, fit, size: (w, h) })
 }
 
 fn points(shape: &DxfShape) -> Vec<Vec2> {
@@ -410,7 +420,7 @@ fn arc(p: &[Vec2]) -> Option<DxfShape> {
 
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let sheet = compose(s, p)?;
-    let mut result = json!({"scale": scale_text(sheet.scale), "sheet": [sheet.size.0, sheet.size.1], "entities": sheet.entities.len()});
+    let mut result = json!({"scale": scale_text(sheet.scale), "ratio": sheet.scale, "fit": scale_text(sheet.fit), "sheet": [sheet.size.0, sheet.size.1], "entities": sheet.entities.len()});
     if p.get("preview").and_then(Value::as_bool) == Some(true) {
         // Polylines as point lists, texts as [x, y, height, text], all in sheet millimetres.
         let mut paths = Vec::new();

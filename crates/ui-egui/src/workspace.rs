@@ -165,7 +165,7 @@ pub const SECTIONS: &[Section] = &[
         promoted: 0,
         ids: &["form.void.extrusion", "form.void.blend", "form.void.revolve", "form.void.sweep", "form.void.swept_blend"],
     },
-    Section { tab: "MODEL", panel: "WORK PLANE", promoted: 2, ids: &["workplane.set", "workplane.show"] },
+    Section { tab: "MODEL", panel: "WORK PLANE", promoted: 3, ids: &["workplane.set", "workplane.show", "workplane.reference"] },
     Section { tab: "MODEL", panel: "DRAW", promoted: 1, ids: &["model.line"] },
     // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
     Section { tab: "MODEL", panel: "FINISH EDITING", promoted: 1, ids: &["component.finish_edit"] },

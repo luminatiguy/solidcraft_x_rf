@@ -243,13 +243,20 @@ impl Pen<'_> {
 
 /// Paint `icon` into `rect` (square), with `dim` for disabled.
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
-    let dark = p.ctx().global_style().visuals.dark_mode;
-    let (ink, ink_accent, ink_point) = if dark {
-        (Color32::from_rgb(0xcf, 0xd4, 0xdb), Color32::from_rgb(0x4f, 0xa3, 0xf7), Color32::from_rgb(0xf0, 0x7a, 0x3a))
-    } else {
-        (Color32::from_rgb(0x34, 0x3c, 0x48), Color32::from_rgb(0x1b, 0x6f, 0xd6), Color32::from_rgb(0xd3, 0x5a, 0x1c))
+    paint_themed(p, rect, icon, if dim { 0.4 } else { 1.0 }, None);
+}
+
+/// [`paint`] in the colour theme's own colours: its text for the lines, its accent for the
+/// highlighted part, its warning colour for points; one `ink` for every part when given (a
+/// single-colour control such as the application bar's).
+pub fn paint_themed(p: &Painter, rect: Rect, icon: Icon, opacity: f32, ink: Option<Color32>) {
+    let t = crate::theme::Tokens::get();
+    let (ink, ink_accent, ink_point) = match ink {
+        Some(c) => (c, c, c),
+        None => (t.text, t.accent, t.warning),
     };
-    let alpha = |c: Color32| if dim { c.gamma_multiply(0.4) } else { c };
+    let dim = opacity < 0.6;
+    let alpha = |c: Color32| c.gamma_multiply(opacity.clamp(0.0, 1.0));
     let pen = Pen { p, r: rect, w: (rect.width() / 16.0).clamp(1.0, 1.6), base: alpha(ink), acc: alpha(ink_accent), pt: alpha(ink_point) };
     let (b, a) = (pen.base, pen.acc);
     paint_file_view(&pen, icon, b, a, dim);
@@ -1147,6 +1154,70 @@ fn paint_constraints(pen: &Pen<'_>, icon: Icon, b: Color32, a: Color32, dim: boo
 }
 
 /// The icon a `cad:<name>` icon name stands for (the sketch tools' ribbon icons).
+/// SolidCraft's icon names for which CADCraft has the same icon.
+pub fn shared(name: &str) -> Option<Icon> {
+    use Icon::*;
+    Some(match name {
+        "new" => New,
+        "open" => Open,
+        "save" => Save,
+        "undo" => Undo,
+        "redo" => Redo,
+        "import" => Import,
+        "export" => Export,
+        "help" => Help,
+        "settings" => Gear,
+        "close" => Close,
+        "copy" => Copy,
+        "delete" => Erase,
+        "measure" => Measure,
+        "move" => Move,
+        "mirror" | "sketch_mirror" => Mirror,
+        "scale" => Scale,
+        "offset" => Offset,
+        "trim" => Trim,
+        "extend" => Extend,
+        "sketch_fillet" => Fillet,
+        "sketch_chamfer" => Chamfer,
+        "explode" => Explode,
+        "break" => Break,
+        "pan" => Pan,
+        "orbit" => Orbit,
+        "zoom" => ZoomWindow,
+        "fit" => ZoomExtents,
+        "list" => List,
+        "plus" => Plus,
+        "line" => Line,
+        "circle" => Circle,
+        "arc3" => Arc,
+        "ellipse" => Ellipse,
+        "spline" => Spline,
+        "point" => Point,
+        "polygon" => Polygon,
+        "rect" => Rectangle,
+        "text" => Text,
+        "select" => SelectObjects,
+        "grid" => Grid,
+        "snap" => Snap,
+        "params" => Parameters,
+        "construction_line" => XLine,
+        "pattern_rect" => ArrayRect,
+        "pattern_circ" => ArrayPolar,
+        "dimension" => DimLinear,
+        "c_coincident" => Coincident,
+        "c_collinear" => Collinear,
+        "c_concentric" => Concentric,
+        "c_equal" => Equal,
+        "c_fix" => Fix,
+        "c_parallel" => Parallel,
+        "c_perpendicular" => Perpendicular,
+        "c_smooth" => Smooth,
+        "c_symmetry" => Symmetric,
+        "c_tangent" => Tangent,
+        _ => return None,
+    })
+}
+
 pub fn by_name(name: &str) -> Option<Icon> {
     use Icon::*;
     Some(match name.strip_prefix("cad:")? {
