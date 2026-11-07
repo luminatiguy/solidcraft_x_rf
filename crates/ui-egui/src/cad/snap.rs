@@ -137,7 +137,21 @@ pub fn foreign(app: &SolveApp, sid: u64, plane: &Plane) -> Arc<Vec<Shape>> {
 /// The snap a cursor at `cursor` (sketch coordinates) takes: within `aperture` (sketch mm) of a
 /// curve's special point, its nearest point last. `base`: the point a line is drawn from (for
 /// Perpendicular).
+/// Every object snap mode but Nearest (as a bit per kind).
+pub const DEFAULT_MODES: u16 = (1 << END) | (1 << MID) | (1 << CEN) | (1 << QUA) | (1 << INT) | (1 << PER);
+
+/// The modes the Drafting Settings list, in order: (kind, name).
+pub const MODES: [(u8, &str); 7] =
+    [(END, "Endpoint"), (MID, "Midpoint"), (CEN, "Center"), (QUA, "Quadrant"), (INT, "Intersection"), (PER, "Perpendicular"), (NEA, "Nearest")];
+
+#[cfg(test)]
 pub fn find(own: &[Ent], foreign: &[Shape], cursor: Vec2, aperture: f64, base: Option<Vec2>, nearest: bool) -> Option<Hit> {
+    find_modes(own, foreign, cursor, aperture, base, DEFAULT_MODES | if nearest { 1 << NEA } else { 0 })
+}
+
+/// The best snap among the running modes (`modes`: a bit per kind).
+pub fn find_modes(own: &[Ent], foreign: &[Shape], cursor: Vec2, aperture: f64, base: Option<Vec2>, modes: u16) -> Option<Hit> {
+    let nearest = modes & (1 << NEA) != 0;
     let near: Vec<&Shape> = own
         .iter()
         .map(|e| &e.shape)
@@ -148,7 +162,7 @@ pub fn find(own: &[Ent], foreign: &[Shape], cursor: Vec2, aperture: f64, base: O
     let mut cands: Vec<(f64, Hit)> = Vec::new();
     let offer_into = |cands: &mut Vec<(f64, Hit)>, p: Vec2, kind: u8, rank: f64| {
         let d = p.dist(cursor);
-        if d <= aperture && p.is_finite() {
+        if d <= aperture && p.is_finite() && modes & (1u16 << kind) != 0 {
             cands.push((d / aperture + rank, Hit { p, kind }));
         }
     };
@@ -214,7 +228,9 @@ pub fn find(own: &[Ent], foreign: &[Shape], cursor: Vec2, aperture: f64, base: O
         }
     }
     // Over a circle or arc, its centre (as CADCraft shows it), unless a closer snap is there.
-    cands.extend(centres.into_iter().map(|c| (0.6, Hit { p: c, kind: CEN })));
+    if modes & (1 << CEN) != 0 {
+        cands.extend(centres.into_iter().map(|c| (0.6, Hit { p: c, kind: CEN })));
+    }
     cands.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, h)| h)
 }
 

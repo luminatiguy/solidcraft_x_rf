@@ -324,6 +324,9 @@ pub const DOCUMENTED: &[&str] = &[
 
 /// The help for `command` in the current language, when it has any.
 pub fn help(command: &str) -> Option<String> {
+    if let Some(d) = crate::cad::description(command) {
+        return Some(d.to_string());
+    }
     if !DOCUMENTED.contains(&command) {
         return None;
     }

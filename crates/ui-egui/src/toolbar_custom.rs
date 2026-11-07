@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use solidcraft_engine::{CommandSpec, command_specs};
 
+use crate::SolveApp;
 use crate::context_menu::Item;
-use crate::{SolveApp, ui_kit};
 
 /// The only workspace so far.
 pub const WORKSPACE: &str = "DESIGN";
@@ -27,6 +27,8 @@ pub struct ToolbarCustom {
     pub panels: BTreeMap<String, Vec<String>>,
     /// `"<workspace>/<tab>"` → gallery commands moved to full-size buttons.
     pub gallery_buttons: BTreeMap<String, Vec<String>>,
+    /// `"<tab>/<command>"` → "small" or "large": the size the user gave a button.
+    pub sizes: BTreeMap<String, String>,
     /// The Customize Toolbar window is open (not kept).
     pub customizing: bool,
 }
@@ -34,6 +36,11 @@ pub struct ToolbarCustom {
 impl ToolbarCustom {
     /// Whether a command still uses a compact gallery cell in this panel.
     pub fn in_gallery(&self, tab: &str, panel: &str, id: &str) -> bool {
+        match self.sizes.get(&format!("{tab}/{id}")).map(String::as_str) {
+            Some("small") => return true,
+            Some("large") => return false,
+            _ => {}
+        }
         if crate::workspace::small_tool(tab, panel, id) {
             return true;
         }
@@ -44,7 +51,7 @@ impl ToolbarCustom {
     }
 
     pub fn prefs(&self) -> Value {
-        json!({"version": 3, "panels": self.panels, "gallery_buttons": self.gallery_buttons})
+        json!({"version": 3, "panels": self.panels, "gallery_buttons": self.gallery_buttons, "sizes": self.sizes})
     }
     pub fn load(&mut self, v: &Value) {
         let version = v.get("version").and_then(Value::as_u64).unwrap_or(0);
@@ -72,6 +79,16 @@ impl ToolbarCustom {
                         let ids = v.as_array()?.iter().take(100).filter_map(|x| x.as_str().map(str::to_string)).collect();
                         Some((k.clone(), ids))
                     })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.sizes = v
+            .get("sizes")
+            .and_then(Value::as_object)
+            .map(|o| {
+                o.iter()
+                    .take(2000)
+                    .filter_map(|(k, v)| v.as_str().filter(|s| matches!(*s, "small" | "large")).map(|s| (k.clone(), s.to_string())))
                     .collect()
             })
             .unwrap_or_default();
@@ -317,6 +334,8 @@ pub fn reset(app: &mut SolveApp, tab: &str) {
     let prefix = format!("{WORKSPACE}/{tab}/");
     app.toolbar_custom.panels.retain(|k, _| !k.starts_with(&prefix));
     app.toolbar_custom.gallery_buttons.remove(&format!("{WORKSPACE}/{tab}"));
+    let sizes = format!("{tab}/");
+    app.toolbar_custom.sizes.retain(|k, _| !k.starts_with(&sizes));
 }
 
 /// The menu of a command (toolbar button, drop-down row, S box row).
@@ -417,64 +436,194 @@ pub fn import(app: &mut SolveApp, v: &Value) -> Result<(), String> {
 
 /// Customize Toolbar: every command of the tab's panels with a check box (on the toolbar or
 /// not), how to drag them, and Reset Toolbar.
+/// What the tile editor was asked to do (applied after drawing it).
+enum Edit {
+    Remove(&'static str),
+    Size(&'static str, bool),
+    Move { id: String, panel: &'static str, before: Option<&'static str> },
+    Add(&'static str, &'static str),
+}
+
+/// Customize Toolbar, laid out as the tiles of a start menu: each panel of the tab is a group of
+/// tiles, large ones (icon and name) and small ones (icon only), in the order the ribbon shows
+/// them. Drag a tile to move it (to another place or panel), right-click it to resize or remove
+/// it, and add tools from the list on the left.
 pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.toolbar_custom.customizing {
         return;
     }
     let tab = app.ui.tab.clone();
-    let mut changes: Vec<(&'static str, bool)> = Vec::new();
+    let mut edits: Vec<Edit> = Vec::new();
     let mut reset_tab = false;
+    let mut open = true;
     let t = crate::theme::Tokens::get();
-    // This long card grows as sections open. A top-left pivot keeps its controls at their
-    // published positions instead of shifting them after egui measures the taller content.
-    let origin =
-        egui::pos2((ctx.content_rect().center().x - t.form_card_width).max(ctx.content_rect().left()), ctx.content_rect().top() + t.space_24 * 2.0);
-    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_toolbar_customize"), "settings", crate::i18n::tr_label("Customize Toolbar"))
-        .placed(egui::Align2::LEFT_TOP, origin)
-        .cards(2.0)
-        .actions("", "Close", None)
-        .show(ctx, true, |ui| {
-            ui_kit::text(ui, &crate::i18n::format("toolbar.customize_note", &[("tab", app.tr_label(&tab))]), ui_kit::Text::Note("customize"));
-            egui::ScrollArea::vertical()
-                .max_height(
-                    (ctx.content_rect().height() - crate::theme::Tokens::get().control_height * 8.0)
-                        .min(crate::theme::Tokens::get().control_height * 20.0),
-                )
-                .show(ui, |ui| {
-                    for (panel, cmds, n) in panel_lists(&tab) {
-                        if cmds.is_empty() {
-                            continue;
-                        }
-                        ui_kit::section(ui, panel, app.tr_label(panel), true, |ui| {
+    let filter_id = egui::Id::new("sc_customize_filter");
+    let mut filter: String = ctx.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+    egui::Window::new(format!("Customize Toolbar — {}", app.tr_label(&tab)))
+        .id(egui::Id::new("sc_toolbar_customize"))
+        .open(&mut open)
+        .default_size(egui::vec2(900.0, 560.0))
+        .resizable(true)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new("Drag a tile to move it. Right-click a tile to resize or remove it. Click + to add a tool.").color(t.text_dim),
+            );
+            ui.add_space(4.0);
+            ui.horizontal_top(|ui| {
+                // The tools of the tab, by panel, with + to add one that is not on the ribbon.
+                ui.vertical(|ui| {
+                    ui.set_width(230.0);
+                    ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search tools").desired_width(220.0));
+                    egui::ScrollArea::vertical().id_salt("customize_all").max_height(460.0).show(ui, |ui| {
+                        for (panel, cmds, n) in panel_lists(&tab) {
                             let shown = buttons(app, &tab, panel, &cmds, n);
-                            for c in &cmds {
-                                let mut on = shown.iter().any(|b| b.id == c.id) || pinned_on(app, &tab, c.id).is_some();
-                                let r = ui_kit::checkbox(ui, app.tr_label(c.label), &mut on);
-                                crate::scenario::publish_handle(&format!("customize:{}", c.id), r.rect.center());
-                                if r.changed() {
-                                    changes.push((c.id, on));
-                                }
+                            let rest: Vec<_> = cmds
+                                .iter()
+                                .filter(|c| !shown.iter().any(|b| b.id == c.id))
+                                .filter(|c| filter.is_empty() || app.tr_label(c.label).to_lowercase().contains(&filter.to_lowercase()))
+                                .collect();
+                            if rest.is_empty() {
+                                continue;
                             }
-                        });
-                    }
+                            ui.label(egui::RichText::new(app.tr_label(panel)).small().strong().color(t.text_dim));
+                            for c in rest {
+                                ui.horizontal(|ui| {
+                                    let (r, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                                    crate::icons::paint_icon(ui.painter(), r, c.info(&app.session).icon, 1.0);
+                                    if ui.small_button("+").on_hover_text("Add to the ribbon").clicked() {
+                                        edits.push(Edit::Add(c.id, panel));
+                                    }
+                                    ui.label(app.tr_label(c.label));
+                                });
+                            }
+                        }
+                    });
                 });
-            let reset = ui_kit::button(ui, crate::i18n::tr_label("Reset Toolbar"), ui_kit::Button::Normal);
-            crate::scenario::publish_target("customize:reset", reset.rect);
-            reset_tab |= reset.clicked();
+                ui.separator();
+                // The tiles.
+                egui::ScrollArea::both().id_salt("customize_tiles").max_height(480.0).show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        for (panel, cmds, n) in panel_lists(&tab) {
+                            if cmds.is_empty() {
+                                continue;
+                            }
+                            let shown = buttons(app, &tab, panel, &cmds, n);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(app.tr_label(panel)).strong());
+                                let group = egui::Frame::new().fill(t.panel_header).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                                    ui.set_min_size(egui::vec2(140.0, 200.0));
+                                    ui.set_max_width(220.0);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                                        for c in &shown {
+                                            let small = app.toolbar_custom.in_gallery(&tab, panel, c.id);
+                                            let size = if small { egui::vec2(32.0, 32.0) } else { egui::vec2(68.0, 68.0) };
+                                            let drag_id = egui::Id::new(("tile", &tab, c.id));
+                                            let resp = ui
+                                                .dnd_drag_source(drag_id, c.id.to_string(), |ui| {
+                                                    let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                                                    ui.painter().rect_filled(r, 3.0, t.toolbar);
+                                                    ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                                                    let icon = c.info(&app.session).icon;
+                                                    if small {
+                                                        crate::icons::paint_icon(ui.painter(), r.shrink(6.0), icon, 1.0);
+                                                    } else {
+                                                        crate::icons::paint_icon(
+                                                            ui.painter(),
+                                                            egui::Rect::from_center_size(r.center() - egui::vec2(0.0, 9.0), egui::vec2(30.0, 30.0)),
+                                                            icon,
+                                                            1.0,
+                                                        );
+                                                        let label = app.tr_label(crate::workspace::ribbon_button_label(c));
+                                                        let mut job = egui::text::LayoutJob::simple(
+                                                            label.to_string(),
+                                                            egui::FontId::proportional(10.0),
+                                                            t.text,
+                                                            r.width() - 4.0,
+                                                        );
+                                                        job.wrap.max_rows = 2;
+                                                        job.halign = egui::Align::Center;
+                                                        let g = ui.painter().layout_job(job);
+                                                        ui.painter().galley(egui::pos2(r.center().x, r.bottom() - 24.0), g, t.text);
+                                                    }
+                                                })
+                                                .response;
+                                            crate::scenario::publish_target(&format!("customize:{}", c.id), resp.rect);
+                                            if let Some(dragged) = resp.dnd_release_payload::<String>()
+                                                && *dragged != c.id
+                                            {
+                                                edits.push(Edit::Move { id: (*dragged).clone(), panel, before: Some(c.id) });
+                                            }
+                                            if resp.dnd_hover_payload::<String>().is_some() {
+                                                ui.painter().vline(resp.rect.left() - 2.0, resp.rect.y_range(), egui::Stroke::new(2.0, t.accent));
+                                            }
+                                            let label = app.tr_label(c.label).to_string();
+                                            let id = c.id;
+                                            resp.on_hover_text(&label).context_menu(|ui| {
+                                                ui.label(egui::RichText::new(&label).strong());
+                                                ui.separator();
+                                                ui.menu_button("Resize", |ui| {
+                                                    if ui.radio(small, "Small").clicked() {
+                                                        edits.push(Edit::Size(id, true));
+                                                        ui.close();
+                                                    }
+                                                    if ui.radio(!small, "Large").clicked() {
+                                                        edits.push(Edit::Size(id, false));
+                                                        ui.close();
+                                                    }
+                                                });
+                                                if ui.button("Remove from the ribbon").clicked() {
+                                                    edits.push(Edit::Remove(id));
+                                                    ui.close();
+                                                }
+                                            });
+                                        }
+                                    });
+                                });
+                                // Dropped on the group's free space: to the end of this panel.
+                                let zone = group.response;
+                                if let Some(dragged) = zone.dnd_release_payload::<String>()
+                                    && !edits.iter().any(|e| matches!(e, Edit::Move { .. }))
+                                {
+                                    edits.push(Edit::Move { id: (*dragged).clone(), panel, before: None });
+                                }
+                                if zone.dnd_hover_payload::<String>().is_some() {
+                                    ui.painter().rect_stroke(zone.rect, 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let reset = ui.button(crate::i18n::tr_label("Reset Toolbar"));
+                crate::scenario::publish_target("customize:reset", reset.rect);
+                reset_tab |= reset.clicked();
+            });
         });
-    for (id, on) in changes {
-        if on {
-            if let Err(e) = pin(app, &tab, id) {
-                app.set_status(e, true);
+    ctx.data_mut(|d| d.insert_temp(filter_id, filter));
+    for e in edits {
+        match e {
+            Edit::Remove(id) => remove(app, &tab, id),
+            Edit::Size(id, small) => {
+                app.toolbar_custom.sizes.insert(format!("{tab}/{id}"), if small { "small" } else { "large" }.to_string());
             }
-        } else {
-            remove(app, &tab, id);
+            Edit::Move { id, panel, before } => reorder(app, &tab, &id, panel, before),
+            Edit::Add(id, panel) => {
+                let mut ids = own(app, &tab, panel);
+                if !ids.iter().any(|x| x == id) {
+                    ids.push(id.to_string());
+                }
+                app.toolbar_custom.panels.insert(key(&tab, panel), ids);
+            }
         }
     }
     if reset_tab {
         reset(app, &tab);
     }
-    app.toolbar_custom.customizing = !closed && action != ui_kit::Action::Cancel;
+    app.toolbar_custom.customizing = open;
 }
 
 #[cfg(test)]

@@ -300,3 +300,35 @@ fn snaps_find_ends_middles_centres_and_crossings() {
     let model = vec![Shape::Line(Vec2::new(50.0, 0.0), Vec2::new(60.0, 0.0))];
     assert_eq!(snap::find(&own, &model, Vec2::new(59.9, 0.1), 0.5, None, false).map(|h| h.kind), Some(snap::END));
 }
+
+#[test]
+fn dynamic_input_reads_distance_and_angle_from_the_last_point() {
+    use super::{Accept, Prompt, Settings, dyn_entry, dyn_submit};
+    let s = Settings::default();
+    let p = Prompt::new("Specify next point", Accept { point: true, ..Default::default() }).base(Some(Vec2::new(10.0, 0.0)));
+    let e = dyn_entry(&s, &p, "40").unwrap();
+    assert!(e.polar && !e.first_locked && e.relative);
+    // Locked distance: the cursor is held 40 from the base, toward where it points.
+    let e = dyn_entry(&s, &p, "40<").unwrap();
+    let held = e.apply(Vec2::new(10.0, 100.0));
+    assert!((held.dist(Vec2::new(10.0, 0.0)) - 40.0).abs() < 1e-9);
+    assert_eq!(dyn_submit(&s, &p, "40<90", Vec2::ZERO), "@40<90");
+    assert_eq!(dyn_submit(&s, &p, "40", Vec2::ZERO), "40");
+    assert_eq!(dyn_submit(&s, &p, "#5,5", Vec2::ZERO), "5,5");
+    // The open angle box takes the cursor's angle.
+    assert_eq!(dyn_submit(&s, &p, "40<", Vec2::new(10.0, 50.0)), "@40<90");
+    // The first point: X and Y, absolute.
+    let first = Prompt::new("Specify first point", Accept { point: true, ..Default::default() });
+    let e = dyn_entry(&s, &first, "3,").unwrap();
+    assert!(!e.polar && !e.relative);
+    assert_eq!(dyn_submit(&s, &first, "3,4", Vec2::ZERO), "3,4");
+}
+
+#[test]
+fn snap_modes_turn_kinds_off() {
+    use super::snap;
+    let own = vec![super::geo::Ent { id: "a".into(), shape: Shape::Line(Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)), construction: false }];
+    let at = Vec2::new(10.05, 0.0);
+    assert_eq!(snap::find_modes(&own, &[], at, 0.5, None, snap::DEFAULT_MODES).map(|h| h.kind), Some(snap::END));
+    assert_eq!(snap::find_modes(&own, &[], at, 0.5, None, 1 << snap::MID).map(|h| h.kind), None);
+}

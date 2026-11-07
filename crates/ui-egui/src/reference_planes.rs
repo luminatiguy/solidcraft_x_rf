@@ -19,13 +19,6 @@ pub const PREFIX: &str = "Reference Plane";
 /// Seen edge-on: the plane's normal is (almost) square to the line of sight.
 const EDGE_ON: f64 = 0.03;
 
-#[derive(Default)]
-pub struct State {
-    /// Drawing one: the first click, when given.
-    pub drawing: bool,
-    first: Option<V3>,
-}
-
 pub fn is_reference(name: &str) -> bool {
     name.starts_with(PREFIX)
 }
@@ -89,51 +82,17 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     }
 }
 
-/// Start drawing one.
-pub fn start(app: &mut SolveApp) {
-    app.reference_planes = State { drawing: true, first: None };
-    app.set_status("Reference Plane: click its first point (it is drawn square to this view)", false);
-}
-
-/// A click while drawing: the first point, then the second makes the plane.
-pub fn click(app: &mut SolveApp, proj: &Proj, pos: Pos2) -> bool {
-    if !app.reference_planes.drawing {
-        return false;
-    }
-    // Onto the screen plane through the view's target.
-    let (o, d) = proj.ray(pos);
-    let target = app.cam.target;
-    let n = view_dir(proj, target);
-    let denom = d.dot(n);
-    if denom.abs() < 1e-12 {
-        return true;
-    }
-    let p = o + d * ((target - o).dot(n) / denom);
-    let Some(a) = app.reference_planes.first else {
-        app.reference_planes.first = Some(p);
-        app.set_status("Reference Plane: click its second point", false);
-        return true;
-    };
-    if (p - a).len() < 1e-6 {
-        return true;
-    }
-    app.reference_planes = State::default();
+/// Make a reference plane through the line from `a` to `b`, square to the plane whose normal
+/// is `n` (the sketch it was drawn in).
+pub fn make(app: &mut SolveApp, a: V3, b: V3, n: V3) {
     let count = planes(app).len() + 1;
-    let c = a + n * 10.0;
     let pt = |v: V3| json!({"point": [v.x, v.y, v.z]});
     let name = format!("{PREFIX} {count}");
-    match app.run("construct.plane.three_points", json!({"a": pt(a), "b": pt(p), "c": pt(c), "name": name})) {
+    let c = a + n * 10.0;
+    match app.run("construct.plane.three_points", json!({"a": pt(a), "b": pt(b), "c": pt(c), "name": name})) {
         Ok(_) => app.set_status(format!("{name} made: it shows as a dashed line in views that see it edge-on; Set Work Plane can pick it"), false),
         Err(e) => app.set_status(e, true),
     }
-    true
-}
-
-/// While drawing: the rubber band from the first point.
-pub fn paint_drawing(app: &SolveApp, painter: &egui::Painter, proj: &Proj, pointer: Option<Pos2>) {
-    let (Some(a), Some(p)) = (app.reference_planes.first.filter(|_| app.reference_planes.drawing), pointer) else { return };
-    let Some(a) = proj.to_screen(a) else { return };
-    painter.extend(egui::Shape::dashed_line(&[a, p], Stroke::new(1.5, crate::theme::Tokens::get().accent), 10.0, 6.0));
 }
 
 /// Show Work Plane: the work plane's own edges, lit over the grid.
@@ -176,24 +135,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn two_clicks_make_a_plane_seen_edge_on_as_a_line() {
+    fn a_line_makes_a_plane_seen_edge_on_as_a_line() {
         let mut h = crate::scenario::Harness::new();
         h.app.cam.set_view(solidcraft_engine::render::StandardView::Top);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         h.app.viewport.rect = Some(rect);
-        start(&mut h.app);
-        let proj = crate::viewport::projection(&h.app, rect);
-        assert!(click(&mut h.app, &proj, egui::pos2(300.0, 300.0)));
-        assert!(click(&mut h.app, &proj, egui::pos2(500.0, 300.0)));
-        assert!(!h.app.reference_planes.drawing);
+        // Drawn in a sketch on XY from (-10, 0) to (10, 0): the plane is XZ-like, seen edge-on from the top.
+        make(&mut h.app, V3::new(-10.0, 0.0, 0.0), V3::new(10.0, 0.0, 0.0), V3::new(0.0, 0.0, 1.0));
         assert_eq!(planes(&h.app).len(), 1);
         assert!(crate::viewport::construction_quads(&h.app).iter().all(|(n, _, _)| !is_reference(n)));
-        // Seen from the top it is a line through the clicks, and a click on it picks it.
         let proj = crate::viewport::projection(&h.app, rect);
-        assert!(matches!(hit(&h.app, &proj, egui::pos2(400.0, 300.0)), Some(Hit::Plane { .. })));
-        assert!(hit(&h.app, &proj, egui::pos2(400.0, 200.0)).is_none());
-        // From the front it is seen face-on: no line.
-        h.app.cam.set_view(solidcraft_engine::render::StandardView::Iso);
+        let segs = segments(&h.app, &proj);
+        assert_eq!(segs.len(), 1);
+        let (_, a, b) = &segs[0];
+        let mid = egui::pos2((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+        assert!(matches!(hit(&h.app, &proj, mid), Some(Hit::Plane { .. })));
+        assert!(hit(&h.app, &proj, mid + egui::vec2(0.0, 100.0)).is_none());
+        h.app.cam.set_view(solidcraft_engine::render::StandardView::Front);
         let proj = crate::viewport::projection(&h.app, rect);
         assert!(segments(&h.app, &proj).is_empty());
     }

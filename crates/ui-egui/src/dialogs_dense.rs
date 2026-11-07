@@ -488,6 +488,10 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
             });
             if ext == 0 {
                 enter |= expr_row(ui, "Distance", distance);
+                // Extrusion Start and End (from the work plane): the depth is End − Start.
+                if *direction < 2 {
+                    extrusion_ends(ui, start, distance);
+                }
             }
             if ext == 1 {
                 enter |= expr_row(ui, "To Offset", to_offset);
@@ -1703,3 +1707,45 @@ mod all_tests;
 #[cfg(test)]
 #[path = "dialogs_sketch_tests.rs"]
 mod sketch_tests;
+
+/// A length typed as a plain number of millimetres (`10`, `10 mm`); none for an expression.
+fn plain_mm(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let t = t.strip_suffix("mm").unwrap_or(t).trim();
+    if t.is_empty() {
+        return Some(0.0);
+    }
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+fn mm_text(v: f64) -> String {
+    let r = (v * 1e6).round() / 1e6;
+    let n = if (r - r.round()).abs() < 1e-9 { format!("{}", r.round()) } else { format!("{r}") };
+    format!("{n} mm")
+}
+
+/// Extrusion Start and Extrusion End, measured from the work plane along the extrusion: Start is
+/// the start offset, End is Start plus the depth; changing either keeps the other where it is.
+fn extrusion_ends(ui: &mut egui::Ui, start: &mut String, distance: &mut String) {
+    let (Some(s0), Some(depth)) = (plain_mm(start), plain_mm(distance)) else {
+        form_row(ui, "Extrusion End", |ui| {
+            ui.label(egui::RichText::new("set by the expressions above").weak());
+        });
+        return;
+    };
+    let mut s = s0;
+    let mut e = s0 + depth;
+    form_row(ui, "Extrusion Start", |ui| {
+        ui.add(egui::DragValue::new(&mut s).speed(0.5).suffix(" mm").max_decimals(4));
+    });
+    form_row(ui, "Extrusion End", |ui| {
+        ui.add(egui::DragValue::new(&mut e).speed(0.5).suffix(" mm").max_decimals(4));
+    });
+    if s != s0 {
+        // Start moved, End stays.
+        *start = if s.abs() < 1e-12 { String::new() } else { mm_text(s) };
+        *distance = mm_text(s0 + depth - s);
+    } else if e != s0 + depth {
+        *distance = mm_text(e - s0);
+    }
+}

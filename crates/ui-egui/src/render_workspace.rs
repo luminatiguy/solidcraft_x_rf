@@ -2388,6 +2388,11 @@ pub(crate) fn interactive_command_info(app: &SolveApp, command: &solidcraft_engi
         info.enabled = true;
         info.disabled_reason = None;
     }
+    // A reference plane's sketch takes a line only.
+    if let Some(reason) = crate::forms::blocked_in_form(app, command.id) {
+        info.enabled = false;
+        info.disabled_reason = Some(reason.into());
+    }
     info
 }
 pub(crate) fn comparison_controls(app: &mut SolveApp, ui: &mut egui::Ui) {

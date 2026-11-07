@@ -5470,7 +5470,6 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::forms::paint_open_ends(app, &painter, &proj);
     crate::reference_planes::paint(app, &painter, &proj);
     crate::reference_planes::paint_work_plane_edges(app, &painter, &proj);
-    crate::reference_planes::paint_drawing(app, &painter, &proj, ui.ctx().pointer_hover_pos());
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);
     crate::sketch_dims::show(app, ui, &proj);

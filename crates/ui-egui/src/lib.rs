@@ -634,7 +634,6 @@ pub struct SolveApp {
     pub(crate) cad: cad::State,
     pub(crate) drawing_ws: drawing_ws::State,
     pub(crate) shell_ui: appshell::State,
-    pub(crate) reference_planes: reference_planes::State,
     /// The ribbon tab before the current `start` moved it to the command's home tab. A command
     /// that starts nothing (refused with a parameter or status error) puts it back (#10540).
     pub(crate) command_tab_before_start: Option<String>,
@@ -882,7 +881,6 @@ impl SolveApp {
             cad: cad::State::default(),
             drawing_ws: drawing_ws::State::default(),
             shell_ui: appshell::State::default(),
-            reference_planes: reference_planes::State::default(),
             command_tab_before_start: None,
             timeline_playback: None,
             delete_check: None,
@@ -3209,6 +3207,9 @@ impl SolveApp {
         if floating {
             let cards = toolbar::shell_cards(self, full);
             self.shell.cards = vec![cards.workspace, cards.ribbon];
+            if !render_workspace::active(self) {
+                self.shell.cards.push(toolbar::tabs_card(&cards));
+            }
             self.shell.history = if left_timeline {
                 let below_ribbon = egui::Rect::from_min_max(egui::pos2(full.left(), cards.bottom), full.max);
                 // A dialog in the left column holds the History's place.

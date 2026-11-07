@@ -375,10 +375,12 @@ pub(crate) fn workspace_menu(ui: &mut egui::Ui, items: &[Item], key_row: Option<
                     "Drawing" => ("drawing", "ui.workspace_drawing_description", None),
                     _ => continue,
                 };
-                let planned = tabs.is_none();
+                let planned = tabs.is_none() && slug != "drawing";
                 let current = item.shortcut == "current";
                 let (accent, soft) = if !planned && slug == "render" {
                     (t.render_fill, t.render_soft)
+                } else if slug == "drawing" {
+                    (crate::drawing_ws::ACCENT, t.panel.lerp_to_gamma(crate::drawing_ws::ACCENT, 0.10))
                 } else {
                     let accent = if planned { t.text_dim } else { t.accent };
                     (accent, t.panel.lerp_to_gamma(accent, 0.10))
@@ -412,26 +414,10 @@ pub(crate) fn workspace_menu(ui: &mut egui::Ui, items: &[Item], key_row: Option<
                 let y = r.top() + 17.0;
                 let galley = egui::WidgetText::from(egui::RichText::new(name).semibold().size(crate::theme::Tokens::get().font_heading).color(text))
                     .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
-                let badge_x = x + galley.size().x + 9.0;
                 let origin = pos2(x, y - galley.size().y / 2.0);
                 let ppp = ui.ctx().pixels_per_point().max(0.5);
                 let origin = pos2((origin.x * ppp).round() / ppp, (origin.y * ppp).round() / ppp);
                 ui.painter().galley(origin, galley, text);
-                let badge = crate::i18n::tr(if planned {
-                    "ui.workspace_planned"
-                } else if current {
-                    "ui.workspace_current"
-                } else {
-                    "ui.workspace_available"
-                });
-                let badge = ui.painter().layout_no_wrap(
-                    badge.to_string(),
-                    FontId::proportional(crate::theme::Tokens::get().font_small),
-                    if current { t.on_accent } else { accent },
-                );
-                let badge_rect = Rect::from_min_size(pos2(badge_x, y - 8.0), badge.size() + vec2(t.space_12, t.space_3));
-                ui.painter().rect_filled(badge_rect, t.radius_lg, if current { accent } else { soft });
-                ui.painter().galley(badge_rect.min + vec2(t.space_6, t.space_3 / 2.0), badge, accent);
                 let line = |content: String, y: f32| {
                     let mut job =
                         egui::text::LayoutJob::simple_singleline(content, FontId::proportional(crate::theme::Tokens::get().font_body), text);

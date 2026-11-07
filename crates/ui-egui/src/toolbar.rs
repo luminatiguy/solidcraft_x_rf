@@ -1511,8 +1511,17 @@ pub(crate) fn shell_cards(app: &SolveApp, available: Rect) -> crate::shell::Card
     if crate::render_workspace::active(app) {
         crate::ui_kit::StageBar::cards(available)
     } else {
-        crate::shell::Cards::new(available, shell_layout(app), ribbon_height(app.preferences.ribbon_labels))
+        let mut cards = crate::shell::Cards::new(available, shell_layout(app), ribbon_height(app.preferences.ribbon_labels));
+        // The open designs' tabs: a strip under the ribbon.
+        cards.bottom = tabs_card(&cards).bottom() + (cards.bottom - cards.ribbon.bottom());
+        cards
     }
+}
+
+/// The floating strip of document tabs under the workspace card and the ribbon.
+pub(crate) fn tabs_card(cards: &crate::shell::Cards) -> Rect {
+    let top = cards.ribbon.bottom() + 4.0;
+    Rect::from_min_max(pos2(cards.workspace.left(), top), pos2(cards.ribbon.right(), top + crate::appshell::TABS_BAR_HEIGHT))
 }
 
 pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -1546,6 +1555,14 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             if !crate::render_workspace::active(app) {
                 crate::scenario::publish_rect("ribbon:card", cards.ribbon);
+                let tabs = tabs_card(&cards);
+                let frame = host.frame(ui.ctx(), t.toolbar, crate::frame::Side::Left);
+                host.paint_background(ui.painter(), frame, tabs);
+                ui.interact(tabs, ui.id().with("shell_tabs_card"), Sense::click());
+                crate::scenario::publish_rect("tabs:card", tabs);
+                let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs));
+                tabs_ui.set_clip_rect(tabs.intersect(ui.clip_rect()));
+                crate::documents::tabs(app, &mut tabs_ui, tabs, tabs.left() + 6.0, tabs.right() - 6.0);
             }
         }
         app.shell.cards = vec![ws, Rect::from_min_max(pos2(ribbon_left, r.top()), r.max)];
@@ -1709,7 +1726,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 let cells = shown.iter().filter(|c| app.toolbar_custom.in_gallery(&tab, panel, c.id)).count();
                 if cells > 0 {
                     // Small tools: columns of three, 27 points apart.
-                    let width = if crate::workspace::SMALL_TOOLS.contains(&(tab.as_str(), *panel)) {
+                    let width = if !(tab == "SKETCH" && *panel == "CONSTRAIN") {
                         cells.div_ceil(if labels { 3 } else { 2 }) as f32 * 27.0
                     } else {
                         gallery_width
@@ -1966,7 +1983,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                         t.toolbar.lerp_to_gamma(t.border, 0.5),
                     );
                 }
-                let small = crate::workspace::SMALL_TOOLS.contains(&(tab.as_str(), *panel));
+                let small = !(tab == "SKETCH" && *panel == "CONSTRAIN");
                 for (index, c) in gallery.iter().enumerate() {
                     let columns = if labels { 3 } else { 6 };
                     let cell = if small {

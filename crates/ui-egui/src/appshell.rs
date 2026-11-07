@@ -446,10 +446,12 @@ pub fn menu_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
                             d.insert_temp(egui::Id::new("sc_help_y"), br.bottom());
                         });
                     } else if name == "File" {
-                        // The File menu is the one the app has always had.
+                        // The File menu is the one the app has always had. (The pass number is
+                        // read before: the context is locked inside `data_mut`.)
+                        let now = pass(ui.ctx());
                         ui.ctx().data_mut(|d| {
                             d.insert_temp(egui::Id::new("sc_file_menu"), true);
-                            d.insert_temp(egui::Id::new("sc_file_menu_opened"), pass(ui.ctx()));
+                            d.insert_temp(egui::Id::new("sc_file_menu_opened"), now);
                             d.insert_temp(egui::Id::new("sc_file_menu_x"), br.left());
                             d.insert_temp(egui::Id::new("sc_file_menu_y"), br.bottom());
                         });
@@ -554,6 +556,9 @@ fn menus(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                 }
                 ui.separator();
+                if row(ui, "Drafting Settings…", "", "snap", true) {
+                    run = Some(Box::new(|app| app.cad.settings.dialog = true));
+                }
                 if row(ui, "Customize application bar…", "", "settings", true) {
                     run = Some(Box::new(|app| app.shell_ui.customize = true));
                 }
@@ -602,6 +607,7 @@ fn selected_feature(app: &SolveApp) -> Option<(String, u64)> {
 /// The Properties window: the selected object, the feature that made it and its inputs (depth,
 /// angle, …), each typed in and applied on Enter.
 pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
+    crate::cad::drafting_settings(app, ctx);
     if !app.shell_ui.properties || !design_shown(app) {
         return;
     }
@@ -687,7 +693,7 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
 
 /// Saved with the preferences.
 pub fn prefs(app: &SolveApp) -> Value {
-    json!({"quick": app.shell_ui.quick, "properties": app.shell_ui.properties})
+    json!({"quick": app.shell_ui.quick, "properties": app.shell_ui.properties, "drafting": app.cad.settings.to_json()})
 }
 
 pub fn load_prefs(app: &mut SolveApp, v: &Value) {
@@ -696,6 +702,9 @@ pub fn load_prefs(app: &mut SolveApp, v: &Value) {
     }
     if let Some(p) = v.get("properties").and_then(Value::as_bool) {
         app.shell_ui.properties = p;
+    }
+    if let Some(d) = v.get("drafting") {
+        app.cad.settings.load(d);
     }
 }
 
@@ -720,5 +729,28 @@ mod tests {
     fn undo_history_and_quick_bar_defaults() {
         assert_eq!(default_quick(), vec!["save", "undo", "redo"]);
         assert!(default_quick().iter().all(|q| QUICK.iter().any(|x| x.0 == q)));
+    }
+
+    fn click(h: &mut crate::scenario::Harness, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        h.frame_with(vec![egui::Event::PointerMoved(at)]);
+        h.frame_with(vec![button(true)]);
+        h.frame_with(vec![button(false)]);
+        h.frames(3);
+    }
+
+    #[test]
+    fn every_menu_opens_and_closes_without_hanging() {
+        let mut h = crate::scenario::Harness::new();
+        h.frames(3);
+        for name in ["file", "edit", "inspect", "window", "help"] {
+            let at = crate::scenario::handle_at(&format!("menu:{name}")).unwrap_or_else(|| panic!("menu:{name}"));
+            click(&mut h, at);
+            click(&mut h, egui::pos2(700.0, 500.0));
+        }
+        let at = crate::scenario::handle_at("appbar:logo").unwrap();
+        click(&mut h, at);
+        click(&mut h, egui::pos2(700.0, 500.0));
+        assert!(crate::scenario::rect_of("tabs:card").is_some() || crate::scenario::handles("tab:design:").len() > 0);
     }
 }

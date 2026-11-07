@@ -25,6 +25,8 @@ pub enum Form {
     Sweep,
     SweptBlend,
     ModelLine,
+    /// A reference plane: one line drawn in a sketch on the work plane.
+    Reference,
 }
 
 impl Form {
@@ -41,6 +43,7 @@ impl Form {
             (Form::Sweep, true) => "Void Sweep",
             (Form::SweptBlend, true) => "Void Swept Blend",
             (Form::ModelLine, _) => "Model Line",
+            (Form::Reference, _) => "Reference Plane",
         }
     }
 
@@ -57,6 +60,7 @@ impl Form {
             (Form::Sweep, true) => "form.void.sweep",
             (Form::SweptBlend, true) => "form.void.swept_blend",
             (Form::ModelLine, _) => "model.line",
+            (Form::Reference, _) => "workplane.reference",
         }
     }
 }
@@ -75,6 +79,7 @@ pub fn parse(id: &str) -> Option<(Form, bool)> {
         "form.void.sweep" => (Form::Sweep, true),
         "form.void.swept_blend" => (Form::SweptBlend, true),
         "model.line" => (Form::ModelLine, false),
+        "workplane.reference" => (Form::Reference, false),
         _ => return None,
     })
 }
@@ -144,8 +149,8 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
         set_work_plane(app);
         return true;
     }
-    if id == "workplane.reference" {
-        crate::reference_planes::start(app);
+    if let Some(reason) = blocked_in_form(app, id) {
+        status(app, reason, true);
         return true;
     }
     if id == "workplane.show" {
@@ -187,7 +192,7 @@ pub fn pressed(app: &SolveApp, id: &str) -> bool {
         return app.forms.picking_work_plane;
     }
     if id == "workplane.reference" {
-        return app.reference_planes.drawing;
+        return app.forms.session.as_ref().is_some_and(|s| s.form == Form::Reference);
     }
     app.forms.session.as_ref().is_some_and(|s| s.form.command(s.void) == id)
 }
@@ -374,6 +379,7 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
         Form::Sweep => "draw the path (lines and arcs end to end), then Finish; the profile comes next",
         Form::SweptBlend => "draw the path (lines and arcs end to end), then Finish; a profile at each end comes next",
         Form::ModelLine => "draw lines on the work plane, then Finish",
+        Form::Reference => "draw one line (snaps work): the reference plane goes through it, square to the sketch",
     };
     let text = format!("{}: {hint}", form.label(void));
     status(app, text, false);
@@ -486,6 +492,30 @@ pub fn intercept_finish(app: &mut SolveApp) -> bool {
         status(app, format!("{label}: {why}"), true);
     }
     true
+}
+
+/// Which tools a form's sketch refuses, and why: a reference plane's takes a line only.
+pub fn blocked_in_form(app: &SolveApp, id: &str) -> Option<&'static str> {
+    let s = app.forms.session.as_ref()?;
+    (s.form == Form::Reference
+        && app.session.active_sketch.is_some()
+        && (id.starts_with("cad.") || id.starts_with("sketch."))
+        && !matches!(id, "cad.line" | "sketch.finish" | "sketch.cancel"))
+    .then_some("A reference plane is drawn with a line only")
+}
+
+/// The first line drawn in the reference plane's sketch, in the world, and the sketch's normal.
+fn reference_line(app: &SolveApp, sketch: u64) -> Option<(Vec3, Vec3, Vec3)> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let ss = st.sketch(sketch)?;
+    for e in crate::cad::geo::ents(&ss.sketch) {
+        if let crate::cad::geo::Shape::Line(a, b) = e.shape
+            && a.dist(b) > 1e-9
+        {
+            return Some((ss.plane.to_world(a), ss.plane.to_world(b), ss.plane.normal()));
+        }
+    }
+    None
 }
 
 /// `cancel_sketch`'s hook: cancelling a form's sketch drops the whole form, with the sketches it
@@ -700,6 +730,12 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
         if p.is_empty() { Err("the sketch needs a closed loop (draw one, or close the open one), then Finish".to_string()) } else { Ok(p) }
     };
     match (session.form, stage) {
+        (Form::Reference, _) => {
+            let (a, b, n) = reference_line(app, active).ok_or("draw a line for the reference plane, then Finish")?;
+            app.forms.session = None;
+            leave(app, "sketch.cancel");
+            crate::reference_planes::make(app, a, b, n);
+        }
         (Form::ModelLine, _) => {
             app.forms.session = None;
             leave(app, "sketch.finish");
@@ -887,20 +923,6 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if std::mem::take(&mut app.forms.clear_selection) {
         let _ = app.session.execute("select.clear", &json!({}));
     }
-    if app.reference_planes.drawing {
-        let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || app.dialog.is_some() || app.session.active_sketch.is_some() {
-            app.reference_planes = Default::default();
-            status(app, "Cancelled", false);
-        } else if let Some(pos) = click
-            && let Some(rect) = app.viewport.rect.filter(|r| r.contains(pos))
-        {
-            let proj = crate::viewport::projection(app, rect);
-            crate::reference_planes::click(app, &proj, pos);
-            app.forms.clear_selection = true;
-        }
-        ctx.request_repaint();
-    }
     if app.forms.picking_work_plane || app.forms.picking_view_plane {
         let click = ctx.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
         if ctx.input(|i| i.key_pressed(egui::Key::Escape))
@@ -937,6 +959,16 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             } else {
                 adopt_work_plane(app, sel);
             }
+        }
+    }
+    // A reference plane is made as soon as its line is drawn.
+    if let (Some(session), Some(active)) = (app.forms.session.clone(), app.session.active_sketch)
+        && session.form == Form::Reference
+        && session.sketches.last() == Some(&active)
+        && reference_line(app, active).is_some()
+    {
+        if let Err(why) = step(app, session, active) {
+            status(app, format!("Reference Plane: {why}"), true);
         }
     }
     if let Some((sketch, feature, seen)) = app.forms.after_edit {
