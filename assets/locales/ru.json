@@ -2037,6 +2037,7 @@
   "navbar.style.shaded_with_edges": "Заполненный с рёбрами",
   "navbar.style.shaded_with_hidden_edges": "Заполненный с невидимыми рёбрами",
   "navbar.style.wireframe": "Каркас",
+  "navbar.style.hidden_line": "Скрытые линии",
   "navbar.translucent": "Полупрозрачный",
   "navbar.value_tip": "{name} · {value}",
   "navbar.visual_style": "Стиль отображения",

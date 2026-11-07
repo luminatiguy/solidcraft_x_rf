@@ -92,9 +92,34 @@ fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity:
         return;
     }
     let ctx = p.ctx();
+    if name == "style_hidden_line" {
+        let dark = dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode);
+        hidden_line_icon(p, r, dark, opacity, ink);
+        return;
+    }
     let resolved = icon_svg::resolve(name);
     let look = Look::themed(dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), resolved.accent, crate::theme::vision());
     paint_resolved(p, r, resolved, look, opacity, ink.map_or(Finish::Artwork, Finish::Ink), mirror);
+}
+
+/// The Hidden line visual style: a cube seen from above a corner, its visible edges only, drawn
+/// thick over a flat face of the background (unlike Wireframe, which shows every edge).
+fn hidden_line_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<Color32>) {
+    let side = r.width().min(r.height());
+    let c = r.center();
+    let s = side * 0.42;
+    let pt = |x: f32, y: f32| egui::pos2(c.x + x * s, c.y + y * s);
+    let ink = ink.unwrap_or(if dark { Color32::from_gray(235) } else { Color32::from_gray(40) }).gamma_multiply(opacity);
+    let paper = if dark { Color32::from_gray(52) } else { Color32::from_gray(245) }.gamma_multiply(opacity);
+    // Corners: the top face's four, and the bottom three in front.
+    let (t0, t1, t2, t3) = (pt(0.0, -1.0), pt(0.87, -0.5), pt(0.0, 0.0), pt(-0.87, -0.5));
+    let (b1, b2, b3) = (pt(0.87, 0.5), pt(0.0, 1.0), pt(-0.87, 0.5));
+    p.add(egui::Shape::convex_polygon(vec![t0, t1, b1, b2, b3, t3], paper, egui::Stroke::NONE));
+    let stroke = egui::Stroke::new((side * 0.085).max(1.4), ink);
+    p.add(egui::Shape::closed_line(vec![t0, t1, b1, b2, b3, t3], stroke));
+    p.line_segment([t3, t2], stroke);
+    p.line_segment([t2, t1], stroke);
+    p.line_segment([t2, b2], stroke);
 }
 
 /// Draw with a named palette ramp, preserving outlines, passive faces and transparency.

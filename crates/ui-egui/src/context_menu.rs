@@ -464,9 +464,9 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
                     .collect();
                 if items.is_empty() { vec![act("ui.editSketch", app.tr("ui.edit_sketch_empty"), "sketch").on(false)] } else { items }
             }
-            Target::VisualStyle => crate::navigation_bar::VISUAL_STYLES
+            Target::VisualStyle => crate::navigation_bar::STYLE_ORDER
                 .iter()
-                .enumerate()
+                .filter_map(|&index| crate::navigation_bar::VISUAL_STYLES.get(index).map(|v| (index, v)))
                 .map(|(index, (style, label))| {
                     let current = usize::from(app.ui.visual_style) == index;
                     let mut item = cmd(app, "view.visual_style", label).with(json!({"style": style})).key(if current { "current" } else { "" });

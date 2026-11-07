@@ -340,15 +340,10 @@ fn solid(i: TOut, front: bool) -> vec4<f32> {
         let h = fract((i.pos.x + turn * i.pos.y) / 9.0);
         return out_color(vec4<f32>(select(base, base * 0.6, h < 0.22), 1.0));
     }
-    // Hidden line (mode 10): the face in its own colour, unlit, with the silhouette of curved
-    // surfaces; the edges are drawn over it.
+    // Hidden line (mode 10): the face in its own colour, unlit; the edges and the silhouettes of
+    // curved surfaces are drawn over it as lines.
     if (u.ana.x > 9.5) {
-        let flat = out_color(vec4<f32>(i.c.rgb, 1.0));
-        if (length(i.n) > 0.5 && fw > 1e-6) {
-            let a = 1.0 - smoothstep(fw * 0.8, fw * 2.0, abs(ndv));
-            return vec4<f32>(mix(flat.rgb, out_color(vec4<f32>(0.07, 0.08, 0.10, 1.0)).rgb, a), 1.0);
-        }
-        return flat;
+        return out_color(vec4<f32>(i.c.rgb, 1.0));
     }
     if (u.ana.x > 0.5 && length(i.n) > 0.5) {
         return analysis(i, k);

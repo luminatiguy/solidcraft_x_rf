@@ -2148,6 +2148,7 @@
   "navbar.style.shaded_with_edges": "Затінений з ребрами",
   "navbar.style.shaded_with_hidden_edges": "Затінений з прихованими ребрами",
   "navbar.style.wireframe": "Каркас",
+  "navbar.style.hidden_line": "Приховані лінії",
   "navbar.translucent": "Напівпрозорий",
   "navbar.value_tip": "{name} · {value}",
   "navbar.visual_style": "Візуальний стиль",

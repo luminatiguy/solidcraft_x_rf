@@ -95,12 +95,23 @@ fn cells(p: &Value, n: usize) -> Result<Vec<Cell>> {
     Ok(out)
 }
 
-/// The projected lines of one view in the view's own millimetres.
-fn view_lines(scene: &meshes::Scene, view: StandardView, up: solidcraft_render::UpAxis, hidden_line: bool) -> Result<Vec<(Vec2, Vec2)>> {
+/// The projected lines of one view in the view's own millimetres: the bodies' edges and
+/// outlines, and the shown sketches' curves (model lines), hidden ones only in a wireframe.
+fn view_lines(
+    scene: &meshes::Scene,
+    parts: &[super::sketch::Part],
+    view: StandardView,
+    up: solidcraft_render::UpAxis,
+    hidden_line: bool,
+) -> Result<Vec<(Vec2, Vec2)>> {
     let mut cam = Camera { up, fov: 0.0, ..Camera::default() };
     cam.set_view(view);
-    let d = projection::drawing(scene, &[], &cam).map_err(|e| bad(CMD, e))?;
-    Ok(d.lines.into_iter().filter(|l| !(hidden_line && l.hidden)).map(|l| (l.a, l.b)).collect())
+    let d = projection::drawing(scene, parts, &cam).map_err(|e| bad(CMD, e))?;
+    let mut out: Vec<(Vec2, Vec2)> = d.lines.into_iter().filter(|l| !(hidden_line && l.hidden)).map(|l| (l.a, l.b)).collect();
+    for path in d.sketch.into_iter().filter(|p| !(hidden_line && p.hidden)) {
+        out.extend(path.points.windows(2).filter_map(|w| Some((*w.first()?, *w.get(1)?))));
+    }
+    Ok(out)
 }
 
 fn bounds(lines: &[(Vec2, Vec2)]) -> Option<(Vec2, Vec2)> {
@@ -168,7 +179,8 @@ fn compose(s: &Session, p: &Value) -> Result<Sheet> {
         return Err(bad(CMD, "no visible bodies to draw"));
     }
     let scene = meshes::prepare(s, 0.01)?;
-    if scene.placements.is_empty() {
+    let parts = super::sketch::parts(s, 0.01).map_err(|e| bad(CMD, e))?;
+    if scene.placements.is_empty() && parts.is_empty() {
         return Err(bad(CMD, "no visible bodies to draw"));
     }
     // The frame and the cells inside it.
@@ -183,7 +195,7 @@ fn compose(s: &Session, p: &Value) -> Result<Sheet> {
             views.push(None);
             continue;
         };
-        let lines = view_lines(&scene, v, up, cell.hidden_line)?;
+        let lines = view_lines(&scene, &parts, v, up, cell.hidden_line)?;
         if let Some((lo, hi)) = bounds(&lines) {
             let (bw, bh) = ((hi.x - lo.x).max(1e-6), (hi.y - lo.y).max(1e-6));
             scale = scale.min((cw * 0.8) / bw).min((ch - LABEL) * 0.8 / bh);
@@ -211,9 +223,12 @@ fn compose(s: &Session, p: &Value) -> Result<Sheet> {
         let cy = fy1 - ch * (r as f64 + 0.5) + LABEL / 2.0;
         let mid = Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
         let place = |p: Vec2| Vec2::new(cx + (p.x - mid.x) * scale, cy + (p.y - mid.y) * scale);
-        let layer = "VISIBLE";
-        let segs: Vec<DxfEntity> = lines.into_iter().map(|(a, b)| line(layer, place(a), place(b))).collect();
-        entities.extend(projection::connect(segs));
+        let placed: Vec<(Vec2, Vec2)> = lines.into_iter().map(|(a, b)| (place(a), place(b))).collect();
+        for chain in chains(&placed) {
+            for shape in curves(&chain) {
+                entities.push(DxfEntity { layer: "VISIBLE".into(), shape });
+            }
+        }
         let bottom = cy - (hi.y - lo.y) * scale / 2.0;
         entities.push(text(Vec2::new(cx, (bottom - LABEL + 1.0).max(area_y0 + 1.0)), 3.5, view_name(v).to_string()));
     }
@@ -225,8 +240,172 @@ fn points(shape: &DxfShape) -> Vec<Vec2> {
     match shape {
         DxfShape::Line(a, b) => vec![*a, *b],
         DxfShape::Polyline { points } => points.clone(),
+        DxfShape::Circle { c, r } => arc_points(*c, *r, 0.0, 360.0),
+        DxfShape::Arc { c, r, a0, a1 } => arc_points(*c, *r, *a0, if a1 < a0 { a1 + 360.0 } else { *a1 }),
+        DxfShape::Spline { ctrl, .. } => ctrl.clone(),
         _ => Vec::new(),
     }
+}
+
+fn arc_points(c: Vec2, r: f64, a0: f64, a1: f64) -> Vec<Vec2> {
+    let n = (((a1 - a0).abs() / 6.0).ceil() as usize).clamp(2, 120);
+    (0..=n)
+        .map(|i| {
+            let a = (a0 + (a1 - a0) * i as f64 / n as f64).to_radians();
+            Vec2::new(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect()
+}
+
+/// Sheet tolerance for joining ends and fitting curves (mm).
+const JOIN: f64 = 1e-3;
+const FIT: f64 = 0.02;
+
+/// Join segments end to end into polylines; a point where more or fewer than two segments
+/// meet ends them.
+fn chains(segs: &[(Vec2, Vec2)]) -> Vec<Vec<Vec2>> {
+    use std::collections::BTreeMap;
+    let key = |p: Vec2| [(p.x / JOIN).round() as i64, (p.y / JOIN).round() as i64];
+    let segs: Vec<(Vec2, Vec2)> = segs.iter().copied().filter(|(a, b)| key(*a) != key(*b)).collect();
+    let mut nodes: BTreeMap<[i64; 2], Vec<usize>> = BTreeMap::new();
+    for (i, (a, b)) in segs.iter().enumerate() {
+        nodes.entry(key(*a)).or_default().push(i);
+        nodes.entry(key(*b)).or_default().push(i);
+    }
+    let mut used = vec![false; segs.len()];
+    let mut out = Vec::new();
+    for (i, (a, b)) in segs.iter().enumerate() {
+        if used.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        if let Some(u) = used.get_mut(i) {
+            *u = true;
+        }
+        let mut points = vec![*a, *b];
+        for _ in 0..2 {
+            while let Some(end) = points.last().copied() {
+                let Some(next_ids) = nodes.get(&key(end)).filter(|n| n.len() == 2) else { break };
+                let Some(next) = next_ids.iter().copied().find(|j| used.get(*j) == Some(&false)) else { break };
+                let Some((p, q)) = segs.get(next) else { break };
+                if let Some(u) = used.get_mut(next) {
+                    *u = true;
+                }
+                points.push(if key(*p) == key(end) { *q } else { *p });
+            }
+            points.reverse();
+        }
+        out.push(points);
+    }
+    out
+}
+
+fn sub(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x - b.x, a.y - b.y)
+}
+fn len(a: Vec2) -> f64 {
+    a.x.hypot(a.y)
+}
+
+/// A polyline as exact-looking entities: split where it turns sharply, then each piece as a
+/// line, an arc or circle when it lies on one, else a cubic spline over its points.
+fn curves(points: &[Vec2]) -> Vec<DxfShape> {
+    let mut pieces: Vec<Vec<Vec2>> = Vec::new();
+    let mut cur: Vec<Vec2> = Vec::new();
+    for (i, p) in points.iter().enumerate() {
+        cur.push(*p);
+        if let (Some(prev), Some(next)) = (i.checked_sub(1).and_then(|j| points.get(j)), points.get(i + 1)) {
+            let (u, v) = (sub(*p, *prev), sub(*next, *p));
+            let (lu, lv) = (len(u), len(v));
+            let turn = if lu > 0.0 && lv > 0.0 { ((u.x * v.x + u.y * v.y) / (lu * lv)).clamp(-1.0, 1.0).acos() } else { 0.0 };
+            if turn > 35f64.to_radians() {
+                pieces.push(std::mem::take(&mut cur));
+                cur.push(*p);
+            }
+        }
+    }
+    if cur.len() > 1 {
+        pieces.push(cur);
+    }
+    pieces.into_iter().flat_map(|piece| piece_shapes(&piece)).collect()
+}
+
+fn piece_shapes(p: &[Vec2]) -> Vec<DxfShape> {
+    let (Some(&a), Some(&b)) = (p.first(), p.last()) else { return Vec::new() };
+    if p.len() == 2 {
+        return vec![DxfShape::Line(a, b)];
+    }
+    // Straight: every point near the chord.
+    let ab = sub(b, a);
+    let l = len(ab);
+    if l > 1e-9 && p.iter().all(|q| ((q.x - a.x) * ab.y - (q.y - a.y) * ab.x).abs() / l < FIT) {
+        return vec![DxfShape::Line(a, b)];
+    }
+    if p.len() >= 4
+        && let Some(shape) = arc(p)
+    {
+        return vec![shape];
+    }
+    if p.len() > 600 {
+        return vec![DxfShape::Polyline { points: p.to_vec() }];
+    }
+    // A clamped cubic (quadratic for three points) B-spline over the points.
+    let n = p.len();
+    let degree = 3.min(n - 1);
+    let spans = n - degree;
+    let mut knots = vec![0.0; degree + 1];
+    knots.extend((1..spans).map(|k| k as f64 / spans as f64));
+    knots.extend(std::iter::repeat_n(1.0, degree + 1));
+    vec![DxfShape::Spline { degree: degree as u8, knots, ctrl: p.to_vec(), weights: None }]
+}
+
+/// The circle or arc the points lie on (a least-squares circle, every point within the fit).
+fn arc(p: &[Vec2]) -> Option<DxfShape> {
+    let n = p.len() as f64;
+    let (mx, my) = (p.iter().map(|q| q.x).sum::<f64>() / n, p.iter().map(|q| q.y).sum::<f64>() / n);
+    let (mut suu, mut svv, mut suv, mut suuu, mut svvv, mut suvv, mut svuu) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for q in p {
+        let (u, v) = (q.x - mx, q.y - my);
+        suu += u * u;
+        svv += v * v;
+        suv += u * v;
+        suuu += u * u * u;
+        svvv += v * v * v;
+        suvv += u * v * v;
+        svuu += v * u * u;
+    }
+    let det = suu * svv - suv * suv;
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let (r1, r2) = (0.5 * (suuu + suvv), 0.5 * (svvv + svuu));
+    let uc = (r1 * svv - r2 * suv) / det;
+    let vc = (r2 * suu - r1 * suv) / det;
+    let c = Vec2::new(mx + uc, my + vc);
+    let r = (uc * uc + vc * vc + (suu + svv) / n).sqrt();
+    if !(r.is_finite() && r > 1e-6 && r < 1e6) || p.iter().any(|q| (len(sub(*q, c)) - r).abs() > FIT) {
+        return None;
+    }
+    let (Some(&a), Some(&b)) = (p.first(), p.last()) else { return None };
+    // Turning direction and the swept angle.
+    let ang = |q: Vec2| (q.y - c.y).atan2(q.x - c.x);
+    let mut sweep = 0.0;
+    for w in p.windows(2) {
+        if let (Some(&x), Some(&y)) = (w.first(), w.get(1)) {
+            let mut d = ang(y) - ang(x);
+            while d > std::f64::consts::PI {
+                d -= std::f64::consts::TAU;
+            }
+            while d < -std::f64::consts::PI {
+                d += std::f64::consts::TAU;
+            }
+            sweep += d;
+        }
+    }
+    if sweep.abs() > std::f64::consts::TAU - 1e-3 || (len(sub(a, b)) < JOIN * 10.0 && sweep.abs() > 6.0) {
+        return Some(DxfShape::Circle { c, r });
+    }
+    let (s0, s1) = if sweep > 0.0 { (ang(a), ang(b)) } else { (ang(b), ang(a)) };
+    Some(DxfShape::Arc { c, r, a0: s0.to_degrees().rem_euclid(360.0), a1: s1.to_degrees().rem_euclid(360.0) })
 }
 
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
@@ -290,6 +469,28 @@ mod tests {
         assert_eq!(nice_scale(1.0), 1.0);
         assert_eq!(scale_text(0.2), "1:5");
         assert_eq!(scale_text(2.0), "2:1");
+    }
+
+    #[test]
+    fn polylines_become_lines_arcs_circles_and_splines() {
+        let circle: Vec<(Vec2, Vec2)> = (0..36)
+            .map(|i| {
+                let a = |k: usize| (k as f64 * 10.0).to_radians();
+                (Vec2::new(5.0 * a(i).cos(), 5.0 * a(i).sin()), Vec2::new(5.0 * a(i + 1).cos(), 5.0 * a(i + 1).sin()))
+            })
+            .collect();
+        let ch = chains(&circle);
+        assert_eq!(ch.len(), 1);
+        assert!(matches!(curves(&ch[0])[..], [DxfShape::Circle { r, .. }] if (r - 5.0).abs() < 0.01));
+        let half: Vec<Vec2> =
+            (0..=18).map(|i| Vec2::new(5.0 * (i as f64 * 10f64.to_radians()).cos(), 5.0 * (i as f64 * 10f64.to_radians()).sin())).collect();
+        assert!(matches!(curves(&half)[..], [DxfShape::Arc { a0, a1, .. }] if a0.abs() < 0.1 && (a1 - 180.0).abs() < 0.1));
+        // A square: four lines.
+        let sq = [Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0)];
+        assert_eq!(curves(&sq).iter().filter(|s| matches!(s, DxfShape::Line(..))).count(), 4);
+        // A parabola: a spline.
+        let par: Vec<Vec2> = (0..20).map(|i| Vec2::new(i as f64 * 0.5, (i as f64 * 0.5).powi(2) * 0.1)).collect();
+        assert!(matches!(curves(&par)[..], [DxfShape::Spline { .. }]));
     }
 
     #[test]

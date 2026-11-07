@@ -114,6 +114,7 @@ mod look_at_tests;
 mod manage_dialogs_tests;
 mod material_card_review;
 mod material_editor;
+mod silhouette;
 
 #[cfg(test)]
 mod measurement_ui_tests;

@@ -439,7 +439,8 @@ pub(crate) fn context_menu(app: &mut SolveApp, response: &egui::Response, index:
 
 fn style_menu(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     let mut chosen = false;
-    for (index, style) in navigation_bar::VISUAL_STYLES.iter().map(|(style, _)| *style).enumerate() {
+    for index in navigation_bar::STYLE_ORDER {
+        let Some((style, _)) = navigation_bar::VISUAL_STYLES.get(index).copied() else { continue };
         let label = format!("navbar.style.{style}");
         let mut item = ui_kit::NavigationMenuRow::new(style, app.tr(&label), navigation_bar::visual_style_icon(index as u8));
         item.selected = app.ui.visual_style == index as u8;

@@ -479,7 +479,7 @@ fn scene_bounds(app: &SolveApp) -> solidcraft_engine::geom::Aabb3 {
 /// so a preview in an empty design has its own. Nothing to draw has no occlusion (#9327).
 fn ao_radius(app: &SolveApp) -> f32 {
     let size = scene_bounds(app).diagonal();
-    if app.preferences.ambient_occlusion && app.ui.visual_style != 2 && size > 0.0 { (size * 0.04).clamp(1e-4, 1e6) as f32 } else { 0.0 }
+    if app.preferences.ambient_occlusion && !matches!(app.ui.visual_style, 2 | 4) && size > 0.0 { (size * 0.04).clamp(1e-4, 1e6) as f32 } else { 0.0 }
 }
 
 pub fn scene_radius(app: &SolveApp) -> f64 {
@@ -762,7 +762,7 @@ pub(crate) fn sky_uniform(on: bool, up: solidcraft_engine::render::UpAxis) -> [f
 
 fn ao_samples(app: &mut SolveApp, ctx: &egui::Context, view_proj: [[f32; 4]; 4], size_px: [f32; 2]) -> u32 {
     // Without AO (off, or wireframe) the count is unused: no repaint is asked for it.
-    if !app.preferences.ambient_occlusion || app.ui.visual_style == 2 || view_settled(app, ctx, view_proj, size_px) {
+    if !app.preferences.ambient_occlusion || matches!(app.ui.visual_style, 2 | 4) || view_settled(app, ctx, view_proj, size_px) {
         solidcraft_gpu::view::AO_SAMPLES
     } else {
         solidcraft_gpu::view::AO_SAMPLES_MOVING
@@ -773,7 +773,7 @@ fn ao_samples(app: &mut SolveApp, ctx: &egui::Context, view_proj: [[f32; 4]; 4],
 /// ambient occlusion drawn, the view has held still for [`SS_SETTLE`], so the picture has all
 /// its samples (#7165). Reads the state the last painted frame left.
 pub(crate) fn ao_settled(app: &SolveApp, ctx: &egui::Context) -> bool {
-    !app.preferences.ambient_occlusion || app.ui.visual_style == 2 || ctx.input(|i| i.time) - app.viewport.ss_view.1 >= SS_SETTLE
+    !app.preferences.ambient_occlusion || matches!(app.ui.visual_style, 2 | 4) || ctx.input(|i| i.time) - app.viewport.ss_view.1 >= SS_SETTLE
 }
 
 /// Whether the view (its view-projection and pixels) has held still for [`SS_SETTLE`]. Until it
@@ -1830,7 +1830,7 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
     let mut sc = GpuScene::default();
     let s = &app.session;
     let st = crate::open_meshing::shown_world(app);
-    if app.ui.ground_shadow && app.ui.visual_style != 2 && app.cam.pitch > 0.0 {
+    if app.ui.ground_shadow && !matches!(app.ui.visual_style, 2 | 4) && app.cam.pitch > 0.0 {
         let geometry = shadow_geometry(app, &st);
         sc.shadow = geometry.bytes.as_ref().clone();
         sc.palette = geometry.palette;
@@ -1839,6 +1839,20 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
     {
         // A hidden shadow must not keep an earlier document's whole model alive.
         *cache = None;
+    }
+    // Wireframe and Hidden line: the outline of curved surfaces, which have no edges of their own
+    // there (a revolved circle, a cylinder's wall), in the edges' colour and width.
+    if matches!(app.ui.visual_style, 2 | 4) && app.session.analysis.is_none() {
+        let active_bodies = active_body_names(app);
+        let halftone = crate::forms::halftone(app);
+        let full = sc.color(c4(tk.text));
+        let faint = sc.color(c4(tk.text.gamma_multiply(0.3)));
+        for b in st.bodies.iter().filter(|b| app.body_visible(&b.name) && !app.preview.effective_replaced().contains(&b.name)) {
+            let col = if halftone || body_faded(app, b, &active_bodies) { faint } else { full };
+            for (a, c) in crate::silhouette::lines(&drawn_mesh(app, b), &proj.cam) {
+                sc.line(a.to_f32(), c.to_f32(), col, 1.3, false);
+            }
+        }
     }
     let mut fill_budget = 131_072;
     // The open sketch's plane in the model this frame shows.
@@ -3824,6 +3838,12 @@ pub(crate) fn highlight_key(app: &SolveApp) -> u64 {
     highlight_geometry_key(app).hash(&mut h);
     let selected = app.highlighted();
     app.cam.half_height().to_bits().hash(&mut h);
+    // A hovered whole object glows along its silhouette, which turns with the view.
+    if matches!(app.viewport.hover, Some(Hit::Face { .. })) && app.ui.pick_bodies {
+        for v in [app.cam.yaw, app.cam.pitch, app.cam.roll] {
+            v.to_bits().hash(&mut h);
+        }
+    }
     // Body triangles and outlines live in world space; the GPU applies the new camera.
     // Only sketch feedback needs projected tessellation and the profile's lift toward the eye.
     let projected = selected.iter().any(|s| matches!(s, Sel::Profile { .. } | Sel::SketchCurve { .. } | Sel::ExternalSketchCurve { .. }))
@@ -4216,7 +4236,7 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
     let mut feedback = GpuScene { palette: std::sync::Arc::new((*sc.palette).clone()), ..Default::default() };
     let (hover_edge, selected_edge) =
         (EdgeColours::new(&mut feedback, t.hover_edge, t.hover_edge_halo), EdgeColours::new(&mut feedback, t.sel_edge, t.sel_edge_rim));
-    let mut hover_instances = HighlightInstances::default();
+    let hover_instances = HighlightInstances::default();
     let mut selected_instances = HighlightInstances::default();
     // Print faces (#8429): tinted towards the colour section views give cut faces, and outlined,
     // so the face a slicer export lays its body on shows at a glance. Drawn before the selection,
@@ -4385,10 +4405,9 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         if !selected_body {
             // A whole body the model draws from a plan is lit by redrawing the plan's own
             // evaluated triangles, not by building every triangle again (see `highlight_plan`).
-            let lit = WholeBody { selected: false, colour: hover_col };
-            if whole && light_whole_body(app, b, &active_bodies, lit, &body_slots, &mut feedback, &mut hover_instances) {
-                // Drawn again from what the model already has on the GPU.
-            } else {
+            // A whole object under the pointer is not filled: it glows along its edges and
+            // outline (below).
+            if !whole {
                 let lit = shown(b);
                 let selected_faces = selected_faces.get(b.name.as_str());
                 let hovered_faces: std::collections::HashSet<usize> = faces.iter().copied().collect();
@@ -4401,7 +4420,12 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         }
         for (ei, e) in m.edges.iter().enumerate() {
             if m.edge_pickable(ei) && (whole || m.edge_faces.get(ei).is_some_and(|fs| fs.iter().any(|f| faces.contains(&(*f as usize))))) {
-                edge_lines(&mut feedback, e, hover_edge, 1.5, &[]);
+                edge_lines(&mut feedback, e, hover_edge, if whole { 2.0 } else { 1.5 }, &[]);
+            }
+        }
+        if whole {
+            for (a, c) in crate::silhouette::lines(&m, &app.cam) {
+                edge_lines(&mut feedback, &[a, c], hover_edge, 2.0, &[]);
             }
         }
     }

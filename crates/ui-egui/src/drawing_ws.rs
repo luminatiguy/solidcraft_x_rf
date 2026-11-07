@@ -36,11 +36,25 @@ pub struct State {
     preview: Option<Preview>,
     key: Option<String>,
     error: Option<String>,
+    /// The sheet view: zoom (1 = the whole sheet fits) and pan in screen points.
+    zoom: f32,
+    pan: Vec2,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State { open: false, rows: 2, cols: 2, cells: default_cells(4), title: String::new(), preview: None, key: None, error: None }
+        State {
+            open: false,
+            rows: 2,
+            cols: 2,
+            cells: default_cells(4),
+            title: String::new(),
+            preview: None,
+            key: None,
+            error: None,
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+        }
     }
 }
 
@@ -178,7 +192,19 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.viewport.rect = None;
     let tk = crate::theme::Tokens::get();
     ui.painter().rect_filled(full, 0.0, tk.viewport_bottom);
-    let panel = Rect::from_min_size(full.min, Vec2::new(280.0_f32.min(full.width() * 0.4), full.height()));
+    // The settings go in the left column under the floating cards there (the workspace switcher,
+    // the browser), and scroll when the room left is short.
+    let mut top = full.top();
+    let mut width = 280.0_f32;
+    let column = Rect::from_min_size(full.min, Vec2::new(width, full.height()));
+    for r in app.shell.cards.iter().copied().chain(app.shell.browser) {
+        if r.left() < column.right() && r.right() > column.left() && r.bottom() < full.bottom() - 120.0 {
+            top = top.max(r.bottom() + 8.0);
+            width = width.max(r.right() - full.left());
+        }
+    }
+    let width = width.min(full.width() * 0.45);
+    let panel = Rect::from_min_max(Pos2::new(full.left(), top), Pos2::new(full.left() + width, full.bottom()));
     let sheet_area = Rect::from_min_max(Pos2::new(panel.right(), full.top()), full.max).shrink(16.0);
     let mut action = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink(10.0)), |ui| {
@@ -242,6 +268,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             if let Some(p) = &app.drawing_ws.preview {
                 ui.label(format!("Sheet {:.0}×{:.0} mm, scale {}", p.size.0, p.size.1, p.scale));
             }
+            ui.horizontal(|ui| {
+                ui.label(format!("Zoom {:.0}%", app.drawing_ws.zoom * 100.0));
+                if ui.button("Fit").clicked() {
+                    app.drawing_ws.zoom = 1.0;
+                    app.drawing_ws.pan = Vec2::ZERO;
+                }
+            });
+            ui.small("Wheel: zoom · middle button: pan");
             if let Some(e) = &app.drawing_ws.error {
                 ui.colored_label(tk.error, e.as_str());
             }
@@ -266,7 +300,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     refresh(app);
     let painter = ui.painter_at(sheet_area);
-    let Some(p) = &app.drawing_ws.preview else {
+    let Some(sheet_size) = app.drawing_ws.preview.as_ref().map(|p| p.size) else {
         painter.text(
             sheet_area.center(),
             Align2::CENTER_CENTER,
@@ -276,11 +310,41 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         );
         return;
     };
-    let (w, h) = (p.size.0.max(1.0), p.size.1.max(1.0));
-    let k = (sheet_area.width() as f64 / w).min(sheet_area.height() as f64 / h);
+    let (w, h) = (sheet_size.0.max(1.0), sheet_size.1.max(1.0));
+    // The mouse wheel zooms about the pointer, the middle button drags the sheet, a double
+    // click of the middle button fits it again.
+    let resp = ui.interact(sheet_area, ui.id().with("drawing_sheet"), Sense::click_and_drag());
+    let (scroll, pointer, middle_drag, middle_double) = ui.input(|i| {
+        let scroll = i.smooth_scroll_delta.y + i.zoom_delta().ln() * 200.0;
+        (
+            scroll,
+            i.pointer.hover_pos(),
+            if i.pointer.button_down(egui::PointerButton::Middle) { i.pointer.delta() } else { Vec2::ZERO },
+            i.pointer.button_double_clicked(egui::PointerButton::Middle),
+        )
+    });
+    let st = &mut app.drawing_ws;
+    if resp.hovered() {
+        if scroll.abs() > 0.0
+            && let Some(at) = pointer
+        {
+            let old = st.zoom;
+            st.zoom = (st.zoom * (scroll * 0.0025).exp()).clamp(0.2, 40.0);
+            // Keep the sheet point under the pointer where it is.
+            let c = sheet_area.center() + st.pan;
+            st.pan += (at - c) * (1.0 - st.zoom / old);
+        }
+        st.pan += middle_drag;
+        if middle_double {
+            st.zoom = 1.0;
+            st.pan = Vec2::ZERO;
+        }
+    }
+    let (zoom, pan) = (st.zoom, st.pan);
+    let Some(p) = &app.drawing_ws.preview else { return };
+    let k = (sheet_area.width() as f64 / w).min(sheet_area.height() as f64 / h) * f64::from(zoom);
     let size = Vec2::new((w * k) as f32, (h * k) as f32);
-    let paper = Rect::from_center_size(sheet_area.center(), size);
-    ui.interact(paper, ui.id().with("drawing_sheet"), Sense::hover());
+    let paper = Rect::from_center_size(sheet_area.center() + pan, size);
     painter.rect_filled(paper.translate(Vec2::splat(3.0)), 0.0, Color32::from_black_alpha(60));
     painter.rect_filled(paper, 0.0, Color32::WHITE);
     let to = |q: [f64; 2]| Pos2::new(paper.left() + (q[0] * k) as f32, paper.bottom() - (q[1] * k) as f32);

@@ -26,12 +26,15 @@ pub(crate) const VISUAL_STYLES: [(&str, &str); 5] = [
     ("hidden_line", "Hidden line"),
 ];
 
+/// The order the styles are listed in: Hidden line beside Wireframe.
+pub(crate) const STYLE_ORDER: [usize; 5] = [0, 1, 3, 2, 4];
+
 pub(crate) fn visual_style_icon(style: u8) -> &'static str {
     match style {
         1 => "style_shaded",
         2 => "style_wireframe",
         3 => "style_hidden_edges",
-        4 => "style_wireframe",
+        4 => "style_hidden_line",
         _ => "style_shaded_edges",
     }
 }

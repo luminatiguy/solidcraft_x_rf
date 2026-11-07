@@ -2152,6 +2152,7 @@
   "navbar.style.shaded_with_edges": "Shaded with edges",
   "navbar.style.shaded_with_hidden_edges": "Shaded with hidden edges",
   "navbar.style.wireframe": "Wireframe",
+  "navbar.style.hidden_line": "Hidden line",
   "navbar.translucent": "Translucent",
   "navbar.value_tip": "{name} · {value}",
   "navbar.visual_style": "Visual style",
