@@ -76,6 +76,11 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
     };
     drop(st);
     let Some(sketch) = sketch else { return false };
+    // While the sketch changes, the object takes every closed region, so removing a loop (a
+    // hole) doesn't break it; its regions are chosen again when the sketch is finished.
+    if reopen {
+        let _ = app.run("timeline.set_profiles", serde_json::json!({"feature": feature, "profiles": "all"}));
+    }
     app.edit_feature(sketch);
     app.forms.after_edit = reopen.then_some((sketch, feature, false));
     app.set_status("Editing the object's sketch: change it, then Finish; the depth comes next", false);

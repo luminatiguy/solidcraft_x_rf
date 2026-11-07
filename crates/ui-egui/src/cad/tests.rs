@@ -332,3 +332,63 @@ fn snap_modes_turn_kinds_off() {
     assert_eq!(snap::find_modes(&own, &[], at, 0.5, None, snap::DEFAULT_MODES).map(|h| h.kind), Some(snap::END));
     assert_eq!(snap::find_modes(&own, &[], at, 0.5, None, 1 << snap::MID).map(|h| h.kind), None);
 }
+
+fn body_box(h: &Harness, name: &str) -> (solidcore_record::Vec3, solidcore_record::Vec3) {
+    let st = crate::open_meshing::session_world(&h.app.session);
+    let b = st.bodies.iter().find(|b| b.name == name).unwrap_or_else(|| panic!("{name}"));
+    let m = b.mesh();
+    let mut lo = solidcore_record::Vec3::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut hi = solidcore_record::Vec3::new(f64::MIN, f64::MIN, f64::MIN);
+    for p in &m.positions {
+        lo = solidcore_record::Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = solidcore_record::Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    }
+    (lo, hi)
+}
+
+#[test]
+fn design_move_copy_rotate_and_mirror_whole_objects() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", serde_json::json!({"length": 10, "width": 10, "height": 10})).unwrap();
+    let name = super::objects::selected_bodies(&h.app)
+        .first()
+        .cloned()
+        .or_else(|| crate::open_meshing::session_world(&h.app.session).bodies.first().map(|b| b.name.clone()))
+        .unwrap();
+    let (lo0, _) = body_box(&h, &name);
+    // Move: picked as an object, then base point and second point on the work plane (XY).
+    tool(&mut h, "obj.move");
+    assert!(h.app.cad.objects);
+    feed(&mut h.app, Input::Object(name.clone()));
+    feed(&mut h.app, Input::Enter);
+    feed(&mut h.app, pt(0.0, 0.0));
+    feed(&mut h.app, pt(20.0, 0.0));
+    assert!(h.app.cad.run.is_none(), "move ends");
+    let (lo, _) = body_box(&h, &name);
+    assert!((lo.x - lo0.x - 20.0).abs() < 1e-6, "{lo:?} {lo0:?}");
+    // Rotate by 90° about the box's corner it now has at (lo.x, lo.y).
+    let _ = h.app.session.execute("select.set", &serde_json::json!({"items": [{"body": {"name": name}}]}));
+    tool(&mut h, "obj.rotate");
+    let corner = (lo.x, lo.y);
+    if h.app.cad.run.as_ref().is_some_and(|r| r.m.prompt(&h.app).accept.select) {
+        feed(&mut h.app, Input::Object(name.clone()));
+        feed(&mut h.app, Input::Enter);
+    }
+    feed(&mut h.app, pt(corner.0, corner.1));
+    feed(&mut h.app, Input::Number(90.0));
+    let (lo2, hi2) = body_box(&h, &name);
+    // Turned a quarter about the corner: it now spans x from corner−10 to corner.
+    assert!((hi2.x - corner.0).abs() < 1e-6 && (lo2.x - (corner.0 - 10.0)).abs() < 1e-6, "{lo2:?} {hi2:?} about {corner:?}");
+    assert!((lo2.y - corner.1).abs() < 1e-6, "{lo2:?}");
+    // Mirror across the line x = 0, keeping the source: a second body appears.
+    let before = crate::open_meshing::session_world(&h.app.session).bodies.len();
+    tool(&mut h, "obj.mirror");
+    if h.app.cad.run.as_ref().is_some_and(|r| r.m.prompt(&h.app).accept.select) {
+        feed(&mut h.app, Input::Object(name.clone()));
+        feed(&mut h.app, Input::Enter);
+    }
+    feed(&mut h.app, pt(0.0, 0.0));
+    feed(&mut h.app, pt(0.0, 10.0));
+    feed(&mut h.app, Input::Enter);
+    assert_eq!(crate::open_meshing::session_world(&h.app.session).bodies.len(), before + 1);
+}

@@ -143,7 +143,9 @@ impl Tool {
             "sketch.constraint.collinear" => ("sketch.constraint.collinear", Kind::Pick(2)),
             "sketch.constraint.midpoint" => ("sketch.constraint.midpoint", Kind::Pick(2)),
             "sketch.constraint.symmetry" => ("sketch.constraint.symmetry", Kind::Pick(3)),
-            id if id.starts_with("cad.") => (solidcraft_engine::find_command(id)?.id, Kind::Cad),
+            id if id.starts_with("cad.") || matches!(id, "obj.move" | "obj.copy" | "obj.rotate" | "obj.mirror") => {
+                (solidcraft_engine::find_command(id)?.id, Kind::Cad)
+            }
             _ => return crate::sketch_tools::tool_for(id),
         };
         Some(Tool {

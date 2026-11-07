@@ -8,6 +8,7 @@
 mod draw;
 pub mod geo;
 mod modify;
+pub mod objects;
 pub mod snap;
 
 use egui::{Color32, Pos2, Stroke, vec2};
@@ -73,6 +74,8 @@ pub enum Input {
     Number(f64),
     Keyword(&'static str),
     Enter,
+    /// An object (a body) clicked at a selection prompt of the design's Move, Copy, Rotate, Mirror.
+    Object(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +226,8 @@ pub struct State {
     pending: Option<Input>,
     /// Polar tracking's line: from the base, at this angle (radians).
     track: Option<(Vec2, f64)>,
+    /// The running tool works on whole objects on the work plane, outside any sketch.
+    pub objects: bool,
 }
 
 /// What each tool does, for its tooltip (CADCraft's descriptions).
@@ -292,6 +297,21 @@ fn make(id: &str) -> Option<Box<dyn Machine>> {
 
 /// `start`'s hook: the sketch tools (`cad.*`).
 pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
+    if let Some(m) = objects::make(id) {
+        if app.session.active_sketch.is_some() {
+            app.set_status("Finish the sketch first: this tool moves whole objects", true);
+            return true;
+        }
+        crate::dialogs::cancel(app);
+        app.dialog = None;
+        let cmd = solidcraft_engine::find_command(id).map_or("obj", |c| c.id);
+        app.tool = crate::tools::Tool::for_command(cmd);
+        app.cad.objects = true;
+        app.cad.run = Some(Running { cmd, m, typed: String::new(), error: None });
+        let step = with_machine(app, |m, app| m.begin(app));
+        after(app, step);
+        return true;
+    }
     if !id.starts_with("cad.") {
         return false;
     }
@@ -300,6 +320,7 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
         app.set_status("Open a sketch first: choose a form tool on the MODEL tab", true);
         return true;
     }
+    app.cad.objects = false;
     crate::dialogs::cancel(app);
     app.dialog = None;
     let cmd = solidcraft_engine::find_command(id).map_or("cad", |c| c.id);
@@ -340,6 +361,7 @@ fn after(app: &mut SolveApp, step: Res) {
 
 fn end(app: &mut SolveApp) {
     app.cad.run = None;
+    app.cad.objects = false;
     if app.tool.as_ref().is_some_and(|t| t.kind == crate::tools::Kind::Cad) {
         app.tool = None;
     }
@@ -410,6 +432,9 @@ fn typed_input(app: &SolveApp, prompt: &Prompt, t: &str) -> Result<Input, String
 // ---- The cursor ---------------------------------------------------------------------------
 
 fn active(app: &SolveApp) -> Option<(u64, solidcraft_engine::sketch::Sketch, Plane)> {
+    if app.cad.objects && app.session.active_sketch.is_none() {
+        return Some((0, solidcraft_engine::sketch::Sketch::default(), objects::plane(app)));
+    }
     let sid = app.session.active_sketch?;
     let st = crate::open_meshing::shown_world(app);
     let ss = st.sketch(sid)?;
@@ -620,6 +645,13 @@ pub fn click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     if let Some(r) = app.cad.run.as_mut() {
         r.typed.clear();
     }
+    // The design's object tools: a click at a selection prompt picks the object under it.
+    if app.cad.objects && prompt.accept.select {
+        if let Some(body) = crate::viewport::body_at(app, proj, pos) {
+            feed(app, Input::Object(body));
+        }
+        return;
+    }
     let p = if prompt.accept.select { app.cad.raw.unwrap_or(p) } else { p };
     feed(app, Input::Point { p, curve: app.cad.hover_curve.clone() });
 }
@@ -633,10 +665,15 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         feed(app, i);
     }
     // A tool whose sketch closed (finished, undone) or that another tool replaced ends.
-    if app.cad.run.is_some() && (app.session.active_sketch.is_none() || !app.tool.as_ref().is_some_and(|t| t.kind == crate::tools::Kind::Cad)) {
+    let outside = app.session.active_sketch.is_none() && !app.cad.objects;
+    if app.cad.run.is_some() && (outside || !app.tool.as_ref().is_some_and(|t| t.kind == crate::tools::Kind::Cad)) {
         app.cad.run = None;
+        app.cad.objects = false;
     }
-    if app.session.active_sketch.is_none() {
+    if app.cad.run.is_none() {
+        app.cad.objects = false;
+    }
+    if app.session.active_sketch.is_none() && !app.cad.objects {
         return;
     }
     let free = ctx.memory(|m| m.focused().is_none());
@@ -878,8 +915,7 @@ pub fn drafting_settings(app: &mut SolveApp, ctx: &egui::Context) {
 
 /// The rubber band, the selected objects, the snap marker and the typed value at the cursor.
 pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
-    let Some((sid, _, plane)) = active(app) else { return };
-    paint_selection(app, painter, proj, sid, &plane);
+    let Some((_, _, plane)) = active(app) else { return };
     let Some(run) = app.cad.run.as_ref() else { return };
     let t = crate::theme::Tokens::get();
     let to = |p: Vec2| proj.to_screen(plane.to_world(p));
@@ -939,6 +975,15 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     }
 }
 
+/// The open sketch's selected objects, drawn over it every frame (with a tool running or not).
+pub fn paint_selected(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
+    if app.cad.objects {
+        return;
+    }
+    let Some((sid, _, plane)) = active(app) else { return };
+    paint_selection(app, painter, proj, sid, &plane);
+}
+
 /// Selected objects as CADCraft shows them: dashed, thicker, in the selection colour over a
 /// glow; the object under the pointer at a selection prompt glows too.
 fn paint_selection(app: &SolveApp, painter: &egui::Painter, proj: &Proj, sid: u64, plane: &Plane) {
@@ -953,8 +998,8 @@ fn paint_selection(app: &SolveApp, painter: &egui::Painter, proj: &Proj, sid: u6
     if sel.is_empty() && hovered.is_none() {
         return;
     }
-    let colour = t.sel_edge;
-    let glow = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 70);
+    let colour = selected_colour(&t);
+    let glow = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 90);
     for e in ents(app) {
         let is_sel = sel.contains(&e.id);
         let is_hover = hovered.as_deref() == Some(e.id.as_str());
@@ -965,7 +1010,7 @@ fn paint_selection(app: &SolveApp, painter: &egui::Painter, proj: &Proj, sid: u6
         if pts.len() < 2 {
             continue;
         }
-        painter.add(egui::Shape::line(pts.clone(), Stroke::new(7.0, glow)));
+        painter.add(egui::Shape::line(pts.clone(), Stroke::new(9.0, glow)));
         if is_sel {
             painter.add(egui::Shape::line(pts.clone(), Stroke::new(2.0, t.viewport_top)));
             dashed(painter, &pts, Stroke::new(2.4, colour));
@@ -973,6 +1018,14 @@ fn paint_selection(app: &SolveApp, painter: &egui::Painter, proj: &Proj, sid: u6
             painter.add(egui::Shape::line(pts, Stroke::new(2.2, colour)));
         }
     }
+}
+
+/// The colour of selected sketch objects: amber, unlike the blue of the sketch's own lines and
+/// of the theme's accent, light on a dark viewport and deep on a light one.
+pub fn selected_colour(t: &crate::theme::Tokens) -> Color32 {
+    let bg = t.viewport_top;
+    let luma = 0.299 * f32::from(bg.r()) + 0.587 * f32::from(bg.g()) + 0.114 * f32::from(bg.b());
+    if luma < 128.0 { Color32::from_rgb(255, 176, 32) } else { Color32::from_rgb(214, 96, 0) }
 }
 
 /// The tooltip frame beside the cursor (above and to the right), as CADCraft's.

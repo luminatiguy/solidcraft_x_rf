@@ -241,3 +241,39 @@ fn a_face_set_as_the_work_plane_takes_the_next_sketch() {
     assert!(crate::forms::isolating(&h.app));
     assert!(crate::forms::halftone(&h.app));
 }
+
+#[test]
+fn an_edited_extrusion_sketch_rebuilds_the_object() {
+    let mut h = Harness::new();
+    start(&mut h, "form.extrusion");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [10, 10]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    assert_eq!(bodies(&h), 1);
+    let body = crate::open_meshing::session_world(&h.app.session).bodies.first().map(|b| b.name.clone()).unwrap();
+    let area = |h: &Harness| {
+        let st = crate::open_meshing::session_world(&h.app.session);
+        let m = st.bodies.first().unwrap().mesh();
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for p in &m.positions {
+            lo = lo.min(p.x);
+            hi = hi.max(p.x);
+        }
+        hi - lo
+    };
+    assert!((area(&h) - 10.0).abs() < 1e-6);
+    // Double-click: its sketch opens; a loop drawn around the old one, the old one deleted.
+    crate::objects::edit_object(&mut h.app, &body);
+    h.frames(2);
+    assert!(h.app.session.active_sketch.is_some());
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [-10, -10], "p1": [20, 20]})).unwrap();
+    finish(&mut h);
+    h.frames(3);
+    // The depth window opens; OK keeps it.
+    if h.app.dialog.is_some() {
+        ok(&mut h);
+    }
+    h.frames(2);
+    // The outer loop takes over: the inner one is now a hole and the object is 30 wide.
+    assert!((area(&h) - 30.0).abs() < 1e-6, "{}", area(&h));
+}

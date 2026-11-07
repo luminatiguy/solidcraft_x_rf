@@ -110,6 +110,9 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("timeline.set_input", "Set Feature Input", set_input).icon("edit").params(
         "feature: id|name, index: the input's place in timeline.inspect's inputs, expression: text or a number in the input's unit (the Properties window) → as timeline.edit",
     ),
+    CommandSpec::new("timeline.set_profiles", "Set Feature Profiles", set_profiles).icon("edit").params(
+        "feature: id|name (an extrude or revolve), profiles: \"all\" | [[curve id, …] outer loop, …] (each a profile by its outer loop) → as timeline.edit",
+    ),
     CommandSpec::new("timeline.inspect", "Inspect Feature", inspect_feature).icon("inspect").noundo().params(
         "group: folder id → group, name, parent, features, joints; or feature: id|name → type, definition (the fields timeline.edit's set changes, with their current values), \
          inputs: [{label, param, expression, unit}] (named inputs parameters.change can also set), error, warning",
@@ -1206,13 +1209,56 @@ fn set_input(s: &mut Session, p: &Value) -> Result<Value> {
     edit_feature(s, &json!({"feature": id, "set": Value::Object(set)}))
 }
 
+/// An extrude's or revolve's profiles chosen again: every profile, or those with these outer loops.
+fn set_profiles(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "timeline.set_profiles";
+    let id = feature_id(s, p.get("feature"), cmd)?;
+    let f = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "feature"))?;
+    let sel = match p.get("profiles") {
+        Some(Value::String(t)) if t == "all" => solidcraft_doc::ProfileSel::All,
+        Some(Value::Array(loops)) if !loops.is_empty() && loops.len() <= 10_000 => {
+            let mut out = Vec::with_capacity(loops.len());
+            for l in loops {
+                let ids: Vec<String> = l
+                    .as_array()
+                    .ok_or_else(|| bad(cmd, "a loop is a list of curve ids"))?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .take(100_000)
+                    .map(str::to_string)
+                    .collect();
+                if ids.is_empty() {
+                    return Err(bad(cmd, "an empty loop"));
+                }
+                out.push(ids);
+            }
+            solidcraft_doc::ProfileSel::Curves { loops: out }
+        }
+        _ => return Err(bad(cmd, "profiles: \"all\" or a list of loops")),
+    };
+    let mut nf = f.clone();
+    match &mut nf.kind {
+        solidcraft_doc::FeatureKind::Extrude { profiles, .. } | solidcraft_doc::FeatureKind::Revolve { profiles, .. } => *profiles = sel,
+        _ => return Err(bad(cmd, "only an extrude or a revolve takes profiles here")),
+    }
+    let before = serde_json::to_value(&f).map_err(|e| EngineError::Other(e.to_string()))?;
+    let after = serde_json::to_value(&nf).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut set = serde_json::Map::new();
+    changed_fields(&before, &after, String::new(), &mut set, 0);
+    if set.is_empty() {
+        return Ok(json!({"unchanged": true}));
+    }
+    edit_feature(s, &json!({"feature": id, "set": Value::Object(set)}))
+}
+
 /// The leaves of `after` that differ from `before`, by dotted path.
 fn changed_fields(before: &Value, after: &Value, path: String, out: &mut serde_json::Map<String, Value>, depth: usize) {
     if before == after || depth > 16 {
         return;
     }
     match (before, after) {
-        (Value::Object(a), Value::Object(b)) => {
+        // Same keys: go into it; else (another enum variant) it is replaced whole.
+        (Value::Object(a), Value::Object(b)) if a.len() == b.len() && a.keys().all(|k| b.contains_key(k)) => {
             for (k, v) in b {
                 let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
                 changed_fields(a.get(k).unwrap_or(&Value::Null), v, p, out, depth + 1);

@@ -2634,6 +2634,14 @@ impl<T: PartialOrd + Copy> Near<T> {
     }
 }
 
+/// The body under the pointer (a face, an edge or a vertex of it).
+pub(crate) fn body_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<String> {
+    pick_hits(app, proj, pos, false, false, false, false).into_iter().find_map(|h| match h {
+        Hit::Face { body, .. } | Hit::Edge { body, .. } | Hit::Vertex { body, .. } => Some(body),
+        _ => None,
+    })
+}
+
 fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, all: bool, include_midpoints: bool, through: bool) -> Vec<Hit> {
     let s = &app.session;
     let st = crate::open_meshing::shown_world(app);
@@ -5468,6 +5476,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::canvas::show(app, ui, &painter, &proj);
     crate::sketch_tools::show(app, ui, &painter, &proj);
     crate::forms::paint_open_ends(app, &painter, &proj);
+    crate::cad::paint_selected(app, &painter, &proj);
     crate::reference_planes::paint(app, &painter, &proj);
     crate::reference_planes::paint_work_plane_edges(app, &painter, &proj);
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);

@@ -247,10 +247,13 @@ fn own(app: &mut SolveApp, tab: &str, panel: &str) -> Vec<String> {
     if let Some(v) = app.toolbar_custom.panels.get(&k) {
         return v.clone();
     }
+    // What the ribbon shows now (a panel of small tools shows every tool).
     let lists = panel_lists(tab);
-    let ids: Vec<String> =
-        lists.iter().find(|(p, ..)| *p == panel).map(|(_, cmds, n)| cmds.iter().take(*n).map(|c| c.id.to_string()).collect()).unwrap_or_default();
-    ids
+    lists
+        .iter()
+        .find(|(p, ..)| *p == panel)
+        .map(|(_, cmds, n)| buttons(app, tab, panel, cmds, *n).iter().map(|c| c.id.to_string()).collect())
+        .unwrap_or_default()
 }
 
 /// Where a command is a button on a tab now: its panel.
@@ -462,7 +465,8 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
     egui::Window::new(format!("Customize Toolbar — {}", app.tr_label(&tab)))
         .id(egui::Id::new("sc_toolbar_customize"))
         .open(&mut open)
-        .default_size(egui::vec2(900.0, 560.0))
+        .default_size(egui::vec2(1300.0, 260.0))
+        .max_height(320.0)
         .resizable(true)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -475,7 +479,7 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.vertical(|ui| {
                     ui.set_width(230.0);
                     ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search tools").desired_width(220.0));
-                    egui::ScrollArea::vertical().id_salt("customize_all").max_height(460.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("customize_all").max_height(150.0).show(ui, |ui| {
                         for (panel, cmds, n) in panel_lists(&tab) {
                             let shown = buttons(app, &tab, panel, &cmds, n);
                             let rest: Vec<_> = cmds
@@ -501,97 +505,126 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
                     });
                 });
                 ui.separator();
-                // The tiles.
-                egui::ScrollArea::both().id_salt("customize_tiles").max_height(480.0).show(ui, |ui| {
+                // The tiles: each panel laid out as the ribbon shows it, its large buttons first,
+                // then its small ones in columns of three.
+                egui::ScrollArea::horizontal().id_salt("customize_tiles").show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         for (panel, cmds, n) in panel_lists(&tab) {
                             if cmds.is_empty() {
                                 continue;
                             }
                             let shown = buttons(app, &tab, panel, &cmds, n);
+                            let (large, small): (Vec<_>, Vec<_>) = shown.iter().partition(|c| !app.toolbar_custom.in_gallery(&tab, panel, c.id));
+                            const LARGE: egui::Vec2 = egui::vec2(60.0, 96.0);
+                            const SMALL: f32 = 30.0;
+                            const GAP: f32 = 4.0;
+                            let columns = small.len().div_ceil(3);
+                            let width = (large.len() as f32 * (LARGE.x + GAP) + columns as f32 * (SMALL + GAP) + 2.0 * GAP).max(110.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(app.tr_label(panel)).strong());
-                                let group = egui::Frame::new().fill(t.panel_header).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-                                    ui.set_min_size(egui::vec2(140.0, 200.0));
-                                    ui.set_max_width(220.0);
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                                        for c in &shown {
-                                            let small = app.toolbar_custom.in_gallery(&tab, panel, c.id);
-                                            let size = if small { egui::vec2(32.0, 32.0) } else { egui::vec2(68.0, 68.0) };
-                                            let drag_id = egui::Id::new(("tile", &tab, c.id));
-                                            let resp = ui
-                                                .dnd_drag_source(drag_id, c.id.to_string(), |ui| {
-                                                    let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                                                    ui.painter().rect_filled(r, 3.0, t.toolbar);
-                                                    ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-                                                    let icon = c.info(&app.session).icon;
-                                                    if small {
-                                                        crate::icons::paint_icon(ui.painter(), r.shrink(6.0), icon, 1.0);
-                                                    } else {
-                                                        crate::icons::paint_icon(
-                                                            ui.painter(),
-                                                            egui::Rect::from_center_size(r.center() - egui::vec2(0.0, 9.0), egui::vec2(30.0, 30.0)),
-                                                            icon,
-                                                            1.0,
-                                                        );
-                                                        let label = app.tr_label(crate::workspace::ribbon_button_label(c));
-                                                        let mut job = egui::text::LayoutJob::simple(
-                                                            label.to_string(),
-                                                            egui::FontId::proportional(10.0),
-                                                            t.text,
-                                                            r.width() - 4.0,
-                                                        );
-                                                        job.wrap.max_rows = 2;
-                                                        job.halign = egui::Align::Center;
-                                                        let g = ui.painter().layout_job(job);
-                                                        ui.painter().galley(egui::pos2(r.center().x, r.bottom() - 24.0), g, t.text);
-                                                    }
-                                                })
-                                                .response;
-                                            crate::scenario::publish_target(&format!("customize:{}", c.id), resp.rect);
-                                            if let Some(dragged) = resp.dnd_release_payload::<String>()
-                                                && *dragged != c.id
-                                            {
-                                                edits.push(Edit::Move { id: (*dragged).clone(), panel, before: Some(c.id) });
+                                ui.add(egui::Label::new(egui::RichText::new(app.tr_label(panel)).strong()).wrap_mode(egui::TextWrapMode::Extend));
+                                let (group, _) = ui.allocate_exact_size(egui::vec2(width, LARGE.y + 2.0 * GAP), egui::Sense::hover());
+                                let zone = ui.interact(group, ui.id().with(("tile_group", panel)), egui::Sense::hover());
+                                let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
+                                ui.painter().rect_filled(group, 4.0, t.panel_header);
+                                if dragging && zone.contains_pointer() {
+                                    ui.painter().rect_stroke(group, 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+                                }
+                                let mut tiles: Vec<(egui::Rect, &&solidcraft_engine::cmd::CommandSpec, bool)> = Vec::new();
+                                let mut x = group.left() + GAP;
+                                for c in &large {
+                                    tiles.push((egui::Rect::from_min_size(egui::pos2(x, group.top() + GAP), LARGE), c, false));
+                                    x += LARGE.x + GAP;
+                                }
+                                for (i, c) in small.iter().enumerate() {
+                                    let at = egui::pos2(x + (i / 3) as f32 * (SMALL + GAP), group.top() + GAP + (i % 3) as f32 * (SMALL + 3.0));
+                                    tiles.push((egui::Rect::from_min_size(at, egui::vec2(SMALL, SMALL)), c, true));
+                                }
+                                let mut dropped_on_tile = false;
+                                for (r, c, is_small) in tiles {
+                                    let resp = ui.interact(r, egui::Id::new(("tile", &tab, c.id)), egui::Sense::click_and_drag());
+                                    crate::scenario::publish_target(&format!("customize:{}", c.id), r);
+                                    if resp.drag_started() {
+                                        egui::DragAndDrop::set_payload(ui.ctx(), c.id.to_string());
+                                    }
+                                    let lifted = resp.dragged();
+                                    let fill = if resp.hovered() && !lifted { t.hover } else { t.toolbar };
+                                    let p = ui.painter();
+                                    p.rect_filled(r, 3.0, if lifted { fill.gamma_multiply(0.4) } else { fill });
+                                    p.rect_stroke(r, 3.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                                    let icon = c.info(&app.session).icon;
+                                    if is_small {
+                                        crate::icons::paint_icon(p, r.shrink(5.0), icon, 1.0);
+                                    } else {
+                                        crate::icons::paint_icon(
+                                            p,
+                                            egui::Rect::from_center_size(egui::pos2(r.center().x, r.top() + 28.0), egui::vec2(30.0, 30.0)),
+                                            icon,
+                                            1.0,
+                                        );
+                                        let label = app.tr_label(crate::workspace::ribbon_button_label(c));
+                                        let mut job = egui::text::LayoutJob::simple(
+                                            label.to_string(),
+                                            egui::FontId::proportional(10.5),
+                                            t.text,
+                                            r.width() - 6.0,
+                                        );
+                                        job.wrap.max_rows = 3;
+                                        job.halign = egui::Align::Center;
+                                        let g = p.layout_job(job);
+                                        p.galley(egui::pos2(r.center().x, r.top() + 50.0), g, t.text);
+                                    }
+                                    if lifted {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                        if let Some(at) = ui.ctx().pointer_interact_pos() {
+                                            let ghost = egui::Rect::from_center_size(at, egui::vec2(26.0, 26.0));
+                                            ui.ctx()
+                                                .layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tile_ghost")))
+                                                .rect_filled(ghost, 3.0, t.accent.gamma_multiply(0.5));
+                                            crate::icons::paint_icon(
+                                                &ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tile_ghost"))),
+                                                ghost.shrink(3.0),
+                                                icon,
+                                                1.0,
+                                            );
+                                        }
+                                    }
+                                    if dragging && !lifted && resp.contains_pointer() {
+                                        ui.painter().vline(r.left() - 2.0, r.y_range(), egui::Stroke::new(2.0, t.accent));
+                                    }
+                                    if let Some(dragged) = resp.dnd_release_payload::<String>()
+                                        && *dragged != c.id
+                                    {
+                                        edits.push(Edit::Move { id: (*dragged).clone(), panel, before: Some(c.id) });
+                                        dropped_on_tile = true;
+                                    }
+                                    let label = app.tr_label(c.label).to_string();
+                                    let id = c.id;
+                                    let small_now = is_small;
+                                    resp.on_hover_text(&label).context_menu(|ui| {
+                                        ui.label(egui::RichText::new(&label).strong());
+                                        ui.separator();
+                                        ui.menu_button("Resize", |ui| {
+                                            if ui.radio(small_now, "Small").clicked() {
+                                                edits.push(Edit::Size(id, true));
+                                                ui.close();
                                             }
-                                            if resp.dnd_hover_payload::<String>().is_some() {
-                                                ui.painter().vline(resp.rect.left() - 2.0, resp.rect.y_range(), egui::Stroke::new(2.0, t.accent));
+                                            if ui.radio(!small_now, "Large").clicked() {
+                                                edits.push(Edit::Size(id, false));
+                                                ui.close();
                                             }
-                                            let label = app.tr_label(c.label).to_string();
-                                            let id = c.id;
-                                            resp.on_hover_text(&label).context_menu(|ui| {
-                                                ui.label(egui::RichText::new(&label).strong());
-                                                ui.separator();
-                                                ui.menu_button("Resize", |ui| {
-                                                    if ui.radio(small, "Small").clicked() {
-                                                        edits.push(Edit::Size(id, true));
-                                                        ui.close();
-                                                    }
-                                                    if ui.radio(!small, "Large").clicked() {
-                                                        edits.push(Edit::Size(id, false));
-                                                        ui.close();
-                                                    }
-                                                });
-                                                if ui.button("Remove from the ribbon").clicked() {
-                                                    edits.push(Edit::Remove(id));
-                                                    ui.close();
-                                                }
-                                            });
+                                        });
+                                        if ui.button("Remove from the ribbon").clicked() {
+                                            edits.push(Edit::Remove(id));
+                                            ui.close();
                                         }
                                     });
-                                });
+                                }
                                 // Dropped on the group's free space: to the end of this panel.
-                                let zone = group.response;
-                                if let Some(dragged) = zone.dnd_release_payload::<String>()
-                                    && !edits.iter().any(|e| matches!(e, Edit::Move { .. }))
-                                {
+                                if !dropped_on_tile && let Some(dragged) = zone.dnd_release_payload::<String>() {
                                     edits.push(Edit::Move { id: (*dragged).clone(), panel, before: None });
                                 }
-                                if zone.dnd_hover_payload::<String>().is_some() {
-                                    ui.painter().rect_stroke(zone.rect, 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
-                                }
                             });
+                            ui.add_space(6.0);
                         }
                     });
                 });

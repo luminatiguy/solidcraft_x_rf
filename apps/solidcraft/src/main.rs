@@ -158,6 +158,7 @@ impl PrefsWriter {
         }
         storage.set_string(solidcraft_ui_egui::prefs::STORAGE_KEY, prefs.clone());
         storage.flush();
+        write_settings_json(&prefs);
         self.written = Some(prefs);
         self.last_write = Some(now);
         self.pending_until = None;
@@ -282,6 +283,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let prefs = self.solve.prefs();
         storage.set_string(solidcraft_ui_egui::prefs::STORAGE_KEY, prefs.clone());
+        write_settings_json(&prefs);
         self.prefs_writer.written = Some(prefs);
     }
     fn on_exit(&mut self) {
@@ -738,6 +740,33 @@ fn settings_dir() -> Result<Option<std::path::PathBuf>, String> {
     startup::settings_directory(selected.as_deref(), eframe::storage_dir("SolidCraft"))
 }
 
+/// Every user setting (the interface, the drafting settings, the quick access bar, the ribbon's
+/// tools), as indented JSON in `settings.json` in the settings folder.
+fn settings_json_path() -> Option<std::path::PathBuf> {
+    settings_dir().ok().flatten().map(|d| d.join("settings.json"))
+}
+
+fn write_settings_json(prefs: &str) {
+    let Some(path) = settings_json_path() else { return };
+    let text = serde_json::from_str::<serde_json::Value>(prefs)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| prefs.to_string());
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+fn read_settings_json() -> Option<String> {
+    let text = std::fs::read_to_string(settings_json_path()?).ok()?;
+    let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    v.is_object().then(|| v.to_string())
+}
+
 /// The anti-aliasing preference, kept next to eframe's storage (it is needed before the
 /// window opens).
 fn graphics_path() -> Option<std::path::PathBuf> {
@@ -1129,7 +1158,9 @@ fn main() -> eframe::Result {
             app.integrated_titlebar = cfg!(target_os = "macos");
             app.cpu_meshing = safe_mode;
             app.graphics_fallback = fallback_note.clone();
-            let stored_ui = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k)));
+            // The user's settings: `settings.json` beside `graphics.json` when there is one (it is
+            // the copy people read and edit), else what eframe keeps.
+            let stored_ui = read_settings_json().or_else(|| cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k))));
             restore_preferences(&mut app, stored_ui.as_deref(), graphics().as_ref(), safe_mode);
             if let Some(path) = &theme_file
                 && let Err(e) = solidcraft_ui_egui::prefs::follow_theme_file_for_run(&mut app, path)

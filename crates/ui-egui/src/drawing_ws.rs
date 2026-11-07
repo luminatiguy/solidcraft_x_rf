@@ -228,17 +228,23 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // The settings go in the left column under the floating cards there (the workspace switcher,
     // the browser), and scroll when the room left is short.
     let mut top = full.top();
+    let mut sheet_top = full.top();
     let mut width = 280.0_f32;
     let column = Rect::from_min_size(full.min, Vec2::new(width, full.height()));
     for r in app.shell.cards.iter().copied().chain(app.shell.browser) {
         if r.left() < column.right() && r.right() > column.left() && r.bottom() < full.bottom() - 120.0 {
             top = top.max(r.bottom() + 8.0);
-            width = width.max(r.right() - full.left());
+            // Only a card of the left column widens it (the ribbon and the tabs strip span the window).
+            if r.width() < full.width() * 0.4 {
+                width = width.max(r.right() - full.left());
+            } else {
+                sheet_top = sheet_top.max(r.bottom() + 4.0);
+            }
         }
     }
     let width = width.min(full.width() * 0.45);
     let panel = Rect::from_min_max(Pos2::new(full.left(), top), Pos2::new(full.left() + width, full.bottom()));
-    let sheet_area = Rect::from_min_max(Pos2::new(panel.right(), full.top()), full.max).shrink(16.0);
+    let sheet_area = Rect::from_min_max(Pos2::new(panel.right(), sheet_top), full.max).shrink(16.0);
     let mut action = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink(10.0)), |ui| {
         egui::ScrollArea::vertical().id_salt("drawing_ws_panel").show(ui, |ui| {
@@ -384,6 +390,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // The mouse wheel zooms about the pointer, the middle button drags the sheet, a double
     // click of the middle button fits it again.
     let resp = ui.interact(sheet_area, ui.id().with("drawing_sheet"), Sense::click_and_drag());
+    // At 100 % the sheet fits and sits against the settings, centred vertically.
+    let fit = (sheet_area.width() as f64 / w).min(sheet_area.height() as f64 / h);
+    let anchor = Pos2::new(sheet_area.left() + (w * fit) as f32 / 2.0, sheet_area.center().y);
     let (scroll, pointer, middle_drag, middle_double) = ui.input(|i| {
         let scroll = i.smooth_scroll_delta.y + i.zoom_delta().ln() * 200.0;
         (
@@ -401,7 +410,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             let old = st.zoom;
             st.zoom = (st.zoom * (scroll * 0.0025).exp()).clamp(0.2, 40.0);
             // Keep the sheet point under the pointer where it is.
-            let c = sheet_area.center() + st.pan;
+            let c = anchor + st.pan;
             st.pan += (at - c) * (1.0 - st.zoom / old);
         }
         st.pan += middle_drag;
@@ -414,7 +423,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let Some(p) = &app.drawing_ws.preview else { return };
     let k = (sheet_area.width() as f64 / w).min(sheet_area.height() as f64 / h) * f64::from(zoom);
     let size = Vec2::new((w * k) as f32, (h * k) as f32);
-    let paper = Rect::from_center_size(sheet_area.center() + pan, size);
+    let paper = Rect::from_center_size(anchor + pan, size);
     painter.rect_filled(paper.translate(Vec2::splat(3.0)), 0.0, Color32::from_black_alpha(60));
     painter.rect_filled(paper, 0.0, Color32::WHITE);
     let to = |q: [f64; 2]| Pos2::new(paper.left() + (q[0] * k) as f32, paper.bottom() - (q[1] * k) as f32);

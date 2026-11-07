@@ -254,7 +254,7 @@ pub fn shown_work_plane(app: &SolveApp) -> Option<Plane> {
     work_plane_world(app)
 }
 
-fn work_plane_world(app: &SolveApp) -> Option<Plane> {
+pub(crate) fn work_plane_world(app: &SolveApp) -> Option<Plane> {
     match app.forms.work_plane.as_ref() {
         None => crate::viewport::named_plane(app, XY),
         Some(Sel::Plane { name }) => crate::viewport::named_plane(app, name),
@@ -614,6 +614,13 @@ fn solid_profiles(app: &SolveApp, sketch: u64) -> Vec<usize> {
             depth % 2 == 0
         })
         .collect()
+}
+
+/// The outer loops (curve ids) of the regions a form takes from `sketch`.
+pub(crate) fn profile_loops(app: &SolveApp, sketch: u64) -> Vec<Vec<String>> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let Some(ss) = st.sketch(sketch) else { return Vec::new() };
+    solid_profiles(app, sketch).into_iter().filter_map(|i| ss.profiles.get(i).map(|p| p.outer_curves.clone())).collect()
 }
 
 fn profile_sels(sketch: u64, profiles: &[usize]) -> Vec<Sel> {
@@ -976,6 +983,14 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             app.forms.after_edit = Some((sketch, feature, true));
         } else if seen && app.session.active_sketch.is_none() && app.dialog.is_none() && app.deferred.is_none() {
             app.forms.after_edit = None;
+            // The object takes the sketch's closed regions as they are now (a loop drawn around
+            // the old one, a hole removed), each by its outer loop.
+            let loops = profile_loops(app, sketch);
+            if !loops.is_empty()
+                && let Err(e) = app.run("timeline.set_profiles", json!({"feature": feature, "profiles": loops}))
+            {
+                status(app, format!("The object keeps its old outline: {e}"), true);
+            }
             if app.session.doc.feature(feature).is_some() {
                 app.edit_feature(feature);
                 status(app, "The sketch is updated; change the depth (or angle) here, then OK", false);
