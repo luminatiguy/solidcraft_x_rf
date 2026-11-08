@@ -40,8 +40,61 @@ pub fn selection_params(app: &SolveApp) -> Value {
             }
         }
     }
+    with_form_sketches(app, &mut items);
     let occurrences: Vec<u64> = app.tree.picked_components.iter().filter_map(|c| app.session.doc.occurrence_of(*c).map(|o| o.id)).collect();
     json!({ "items": items, "occurrences": occurrences, "canvases": app.tree.picked_canvases, "joints": app.tree.picked_joints })
+}
+
+/// A Blend, Sweep or Swept Blend body deleted takes its feature and the sketches that made it
+/// (its sections, its path), unless another feature still uses one of them: a form is one object.
+fn with_form_sketches(app: &SolveApp, items: &mut Vec<solidcraft_engine::Sel>) {
+    use solidcraft_engine::Sel;
+    use solidcraft_engine::doc::FeatureKind;
+    let st = crate::open_meshing::session_world(&app.session);
+    let doc = &app.session.doc;
+    let mut extra: Vec<Sel> = Vec::new();
+    for item in items.iter() {
+        let Sel::Body { name } = item else { continue };
+        let Some(b) = st.bodies.iter().find(|b| &b.name == name) else { continue };
+        let Some(f) = doc.feature(b.feature) else { continue };
+        let sketches: Vec<u64> = match &f.kind {
+            FeatureKind::Loft { sections, .. } => sections.iter().map(|s| s.sketch.0).collect(),
+            FeatureKind::Sweep { sketch, path_sketch, .. } => vec![sketch.0, path_sketch.0],
+            _ => continue,
+        };
+        // Only a feature that made this one body.
+        if st.bodies.iter().filter(|x| x.feature == f.id).count() != 1 {
+            continue;
+        }
+        let used_elsewhere =
+            |sk: u64| doc.features.iter().any(|g| g.id != f.id && g.id != sk && serde_json::to_value(&g.kind).is_ok_and(|v| refers_to(&v, sk)));
+        extra.push(Sel::Feature { id: f.id });
+        for sk in sketches {
+            if doc.feature(sk).is_some() && !used_elsewhere(sk) {
+                extra.push(Sel::Feature { id: sk });
+            }
+        }
+    }
+    if extra.is_empty() {
+        return;
+    }
+    // The bodies go with their features.
+    items
+        .retain(|i| !matches!(i, Sel::Body { name } if st.bodies.iter().any(|b| &b.name == name && extra.contains(&Sel::Feature { id: b.feature }))));
+    for e in extra {
+        if !items.contains(&e) {
+            items.push(e);
+        }
+    }
+}
+
+/// Whether a feature's JSON names sketch `id` (as `sketch`, `path_sketch` or a section's).
+fn refers_to(v: &Value, id: u64) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, x)| (matches!(k.as_str(), "sketch" | "path_sketch") && x.as_u64() == Some(id)) || refers_to(x, id)),
+        Value::Array(a) => a.iter().any(|x| refers_to(x, id)),
+        _ => false,
+    }
 }
 
 fn is_empty(p: &Value) -> bool {

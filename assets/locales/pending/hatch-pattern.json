@@ -1,0 +1,18 @@
+{
+  "en": {
+    "prefs.hatch.title": "Hatch Patterns",
+    "prefs.hatch.note": "The patterns the SURFACE tab's Hatch Pattern tool offers: SolidCraft's own, and those of the .pat files in a folder you choose.",
+    "prefs.hatch.folder": "Pattern folder",
+    "prefs.hatch.choose": "Choose…",
+    "prefs.hatch.clear": "Clear",
+    "prefs.hatch.count": "{own} SolidCraft patterns, {folder} from the folder"
+  },
+  "ru": {
+    "prefs.hatch.title": "Штриховки",
+    "prefs.hatch.note": "Образцы для инструмента Hatch Pattern на вкладке SURFACE: собственные образцы SolidCraft и образцы из файлов .pat в выбранной папке.",
+    "prefs.hatch.folder": "Папка образцов",
+    "prefs.hatch.choose": "Выбрать…",
+    "prefs.hatch.clear": "Очистить",
+    "prefs.hatch.count": "Образцов SolidCraft: {own}, из папки: {folder}"
+  }
+}

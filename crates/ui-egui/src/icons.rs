@@ -98,6 +98,15 @@ fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity:
         hidden_line_icon(p, r, dark, opacity, ink);
         return;
     }
+    if name == "void_cube" || name == "hatch_pattern" {
+        let dark = dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode);
+        if name == "void_cube" {
+            void_cube_icon(p, r, dark, opacity, ink);
+        } else {
+            hatch_icon(p, r, dark, opacity, ink);
+        }
+        return;
+    }
     let resolved = icon_svg::resolve(name);
     let look = Look::themed(dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), resolved.accent, crate::theme::vision());
     paint_resolved(p, r, resolved, look, opacity, ink.map_or(Finish::Artwork, Finish::Ink), mirror);
@@ -121,6 +130,44 @@ fn hidden_line_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<
     p.line_segment([t3, t2], stroke);
     p.line_segment([t2, t1], stroke);
     p.line_segment([t2, b2], stroke);
+}
+
+/// Void Forms: a cube drawn in dashes (a void is the shape of what it takes away).
+fn void_cube_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<Color32>) {
+    let side = r.width().min(r.height());
+    let c = r.center();
+    let s = side * 0.42;
+    let pt = |x: f32, y: f32| egui::pos2(c.x + x * s, c.y + y * s);
+    let ink = ink.unwrap_or(if dark { Color32::from_gray(235) } else { Color32::from_gray(40) }).gamma_multiply(opacity);
+    let (t0, t1, t2, t3) = (pt(0.0, -1.0), pt(0.87, -0.5), pt(0.0, 0.0), pt(-0.87, -0.5));
+    let (b1, b2, b3) = (pt(0.87, 0.5), pt(0.0, 1.0), pt(-0.87, 0.5));
+    let stroke = egui::Stroke::new((side * 0.07).max(1.2), ink);
+    let dash = (side * 0.11).max(2.0);
+    let gap = (side * 0.07).max(1.5);
+    for (a, b) in [(t0, t1), (t1, b1), (b1, b2), (b2, b3), (b3, t3), (t3, t0), (t3, t2), (t2, t1), (t2, b2)] {
+        p.extend(egui::Shape::dashed_line(&[a, b], stroke, dash, gap));
+    }
+}
+
+/// Hatch Pattern: a face (a parallelogram seen at an angle) filled with parallel lines.
+fn hatch_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<Color32>) {
+    let side = r.width().min(r.height());
+    let c = r.center();
+    let s = side * 0.4;
+    let pt = |x: f32, y: f32| egui::pos2(c.x + x * s, c.y + y * s);
+    let ink = ink.unwrap_or(if dark { Color32::from_gray(235) } else { Color32::from_gray(40) }).gamma_multiply(opacity);
+    let accent = Color32::from_rgb(0, 150, 220).gamma_multiply(opacity);
+    let face = [pt(-1.0, -0.55), pt(0.55, -1.0), pt(1.0, 0.55), pt(-0.55, 1.0)];
+    p.add(egui::Shape::closed_line(face.to_vec(), egui::Stroke::new((side * 0.07).max(1.2), ink)));
+    // Lines across the face, clipped to it by walking its edges.
+    let thin = egui::Stroke::new((side * 0.045).max(1.0), accent);
+    // Three lines across the face, parallel to its diagonal, then two in its other half.
+    for t in [0.35f32, 0.7, 1.0] {
+        p.line_segment([face[0] + (face[1] - face[0]) * t, face[0] + (face[3] - face[0]) * t], thin);
+    }
+    for t in [0.35f32, 0.7] {
+        p.line_segment([face[1] + (face[2] - face[1]) * t, face[3] + (face[2] - face[3]) * t], thin);
+    }
 }
 
 /// Draw with a named palette ramp, preserving outlines, passive faces and transparency.

@@ -111,4 +111,44 @@ mod tests {
         assert!(is_dwg(&dwg), "{:?}", &dwg[..dwg.len().min(8)]);
         assert!(dxf_to_dwg(b"garbage").is_err());
     }
+
+    #[test]
+    fn a_hatch_and_a_block_survive_the_conversion() {
+        use crate::HatchLine;
+        let square = vec![Vec2::new(0.0, 0.0), Vec2::new(20.0, 0.0), Vec2::new(20.0, 20.0), Vec2::new(0.0, 20.0)];
+        let ents = vec![
+            DxfEntity {
+                layer: "HATCH".into(),
+                shape: DxfShape::Hatch {
+                    loops: vec![square],
+                    pattern: "SC_LINES".into(),
+                    lines: vec![HatchLine { angle_deg: 45.0, base: Vec2::ZERO, offset: Vec2::new(-2.0, 2.0), dashes: vec![] }],
+                },
+            },
+            DxfEntity {
+                layer: "HATCH".into(),
+                shape: DxfShape::Block {
+                    name: "SC_HATCH_1".into(),
+                    shapes: vec![
+                        DxfShape::Line(Vec2::new(30.0, 0.0), Vec2::new(40.0, 10.0)),
+                        DxfShape::Line(Vec2::new(30.0, 5.0), Vec2::new(40.0, 15.0)),
+                    ],
+                },
+            },
+        ];
+        let dxf = write_dxf_drawing(&[DxfLayer::new("HATCH", 8)], &ents).unwrap();
+        let doc = acadrust::DxfReader::from_reader(Cursor::new(dxf.clone().into_bytes())).and_then(|r| r.read()).unwrap();
+        let kinds: Vec<&str> = doc
+            .entities()
+            .map(|e| match e {
+                acadrust::EntityType::Hatch(_) => "hatch",
+                acadrust::EntityType::Insert(_) => "insert",
+                _ => "other",
+            })
+            .collect();
+        assert!(kinds.contains(&"hatch") && kinds.contains(&"insert"), "{kinds:?}");
+        assert_eq!(doc.entities_in_block("SC_HATCH_1").count(), 2);
+        let dwg = dxf_to_dwg(dxf.as_bytes()).unwrap();
+        assert!(is_dwg(&dwg));
+    }
 }

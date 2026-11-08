@@ -120,6 +120,8 @@ pub struct State {
     pub work_plane: Option<Sel>,
     /// The work plane's grid is shown (Show Work Plane).
     pub show_work_plane: bool,
+    /// Show Reference Planes: those not seen edge-on show as outlines.
+    pub show_references: bool,
     /// Set Work Plane waits for a plane or face to be picked.
     pub picking_work_plane: bool,
     /// Orient to a plane (the view cube's menu) waits for a plane or flat face.
@@ -151,6 +153,17 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     }
     if let Some(reason) = blocked_in_form(app, id) {
         status(app, reason, true);
+        return true;
+    }
+    if id == "workplane.show_references" {
+        app.forms.show_references = !app.forms.show_references;
+        let n = solidcraft_engine::view::construction_planes(&app.session)
+            .into_iter()
+            .filter(|(_, n, _)| crate::reference_planes::is_reference(n))
+            .count();
+        let text =
+            if app.forms.show_references { format!("Reference planes shown ({n})") } else { "Reference planes shown only edge-on".to_string() };
+        status(app, text, false);
         return true;
     }
     if id == "workplane.show" {
@@ -187,6 +200,9 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
 pub fn pressed(app: &SolveApp, id: &str) -> bool {
     if id == "workplane.show" {
         return app.forms.show_work_plane;
+    }
+    if id == "workplane.show_references" {
+        return app.forms.show_references;
     }
     if id == "workplane.set" {
         return app.forms.picking_work_plane;
@@ -354,6 +370,29 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     app.tool = None;
     let _ = app.session.execute("select.clear", &json!({}));
     app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None });
+    if form == Form::Reference {
+        // A reference plane is drawn on a plane square to the view, through its centre: the
+        // camera stays where it is, the grid faces the screen, and the plane made from the
+        // line is seen edge-on from here.
+        let cam = app.settled_cam();
+        let (right, up, _) = cam.basis();
+        let view = Plane::new(cam.target, right, up);
+        let opened = match view {
+            Some(p) => app.run("sketch.create", json!({"plane": plane_json(&p), "name": "Reference Plane sketch", "project_edges": false})),
+            None => Err("the view has no direction".to_string()),
+        };
+        if let Err(why) = opened {
+            app.forms.session = None;
+            status(app, format!("Reference Plane: {why}"), true);
+            return;
+        }
+        // Whatever opening a sketch would do to the camera, it stays.
+        app.cam_anim = None;
+        app.cam = cam;
+        opened_sketch(app, false);
+        status(app, "Reference Plane: draw one line (snaps work): the plane goes through it, square to the view", false);
+        return;
+    }
     let plane = app.forms.work_plane.clone().unwrap_or_else(|| Sel::Plane { name: XY.into() });
     let opened = open_on(app, &plane).or_else(|why| {
         if app.forms.work_plane.is_some() {

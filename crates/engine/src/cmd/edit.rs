@@ -113,6 +113,10 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("timeline.set_profiles", "Set Feature Profiles", set_profiles).icon("edit").params(
         "feature: id|name (an extrude or revolve), profiles: \"all\" | [[curve id, …] outer loop, …] (each a profile by its outer loop) → as timeline.edit",
     ),
+    CommandSpec::new("timeline.set_plane_offset", "Set Sketch Plane Offset", set_plane_offset).icon("edit").params(
+        "sketch: id|name, offset: length expression → the sketch's plane offset along its base plane's normal (a plain plane becomes offset from itself); as timeline.edit. \
+         read?: true returns {offset} (its expression) without changing anything",
+    ),
     CommandSpec::new("timeline.inspect", "Inspect Feature", inspect_feature).icon("inspect").noundo().params(
         "group: folder id → group, name, parent, features, joints; or feature: id|name → type, definition (the fields timeline.edit's set changes, with their current values), \
          inputs: [{label, param, expression, unit}] (named inputs parameters.change can also set), error, warning",
@@ -1240,6 +1244,43 @@ fn set_profiles(s: &mut Session, p: &Value) -> Result<Value> {
     match &mut nf.kind {
         solidcraft_doc::FeatureKind::Extrude { profiles, .. } | solidcraft_doc::FeatureKind::Revolve { profiles, .. } => *profiles = sel,
         _ => return Err(bad(cmd, "only an extrude or a revolve takes profiles here")),
+    }
+    let before = serde_json::to_value(&f).map_err(|e| EngineError::Other(e.to_string()))?;
+    let after = serde_json::to_value(&nf).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut set = serde_json::Map::new();
+    changed_fields(&before, &after, String::new(), &mut set, 0);
+    if set.is_empty() {
+        return Ok(json!({"unchanged": true}));
+    }
+    edit_feature(s, &json!({"feature": id, "set": Value::Object(set)}))
+}
+
+/// A sketch's plane moved along its base plane's normal: Blend's Start and End.
+fn set_plane_offset(s: &mut Session, p: &Value) -> Result<Value> {
+    use solidcraft_doc::{Expr, FeatureKind, PlaneRef};
+    let cmd = "timeline.set_plane_offset";
+    let id = feature_id(s, p.get("sketch"), cmd)?;
+    let f = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "sketch"))?;
+    let FeatureKind::Sketch { plane, .. } = &f.kind else { return Err(bad(cmd, "not a sketch")) };
+    if p.get("read").and_then(Value::as_bool) == Some(true) {
+        let offset = match plane {
+            PlaneRef::Offset { distance, .. } => serde_json::to_value(distance).unwrap_or(json!("0 mm")),
+            _ => json!("0 mm"),
+        };
+        return Ok(json!({"offset": offset}));
+    }
+    let expression = match p.get("offset") {
+        Some(Value::String(t)) if !t.trim().is_empty() && t.len() < 4096 => t.trim().to_string(),
+        Some(Value::Number(n)) => format!("{n} mm"),
+        _ => return Err(bad(cmd, "offset")),
+    };
+    let next = match plane {
+        PlaneRef::Offset { base, .. } => PlaneRef::Offset { base: base.clone(), distance: Expr::from(expression) },
+        other => PlaneRef::Offset { base: Box::new(other.clone()), distance: Expr::from(expression) },
+    };
+    let mut nf = f.clone();
+    if let FeatureKind::Sketch { plane, .. } = &mut nf.kind {
+        *plane = next;
     }
     let before = serde_json::to_value(&f).map_err(|e| EngineError::Other(e.to_string()))?;
     let after = serde_json::to_value(&nf).map_err(|e| EngineError::Other(e.to_string()))?;

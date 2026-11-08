@@ -82,6 +82,43 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     }
 }
 
+/// Show Reference Planes: every reference plane the view does not see edge-on, as its outline
+/// (like the origin planes' frames) in the sketch colour, half transparent.
+pub fn paint_outlines(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
+    if !app.forms.show_references {
+        return;
+    }
+    let t = crate::theme::Tokens::get();
+    let ink = t.sketch_ink;
+    let col = Color32::from_rgba_unmultiplied(ink.r(), ink.g(), ink.b(), 140);
+    let st = crate::open_meshing::shown_world(app);
+    let mut size = 0.0f64;
+    for b in &st.bodies {
+        let m = b.mesh();
+        for p in &m.positions {
+            size = size.max(p.x.abs()).max(p.y.abs()).max(p.z.abs());
+        }
+    }
+    let half = if size > 0.0 { size * 0.6 } else { 50.0 };
+    for (name, n, o, x, y) in planes(app) {
+        if n.dot(view_dir(proj, o)).abs() <= EDGE_ON {
+            continue;
+        }
+        let corners = [o - x * half - y * half, o + x * half - y * half, o + x * half + y * half, o - x * half + y * half];
+        let pts: Vec<Pos2> = corners.iter().filter_map(|c| proj.to_screen(*c)).collect();
+        if pts.len() != 4 {
+            continue;
+        }
+        let selected = app.session.selection.iter().any(|s| matches!(s, Sel::Plane { name: n } if *n == name));
+        let stroke = Stroke::new(if selected { 2.0 } else { 1.2 }, if selected { t.sel_edge } else { col });
+        for i in 0..4 {
+            painter.line_segment([pts[i], pts[(i + 1) % 4]], stroke);
+        }
+        let label_at = pts[3] + egui::vec2(4.0, 4.0);
+        painter.text(label_at, egui::Align2::LEFT_TOP, &name, egui::FontId::proportional(11.0), col);
+    }
+}
+
 /// Make a reference plane through the line from `a` to `b`, square to the plane whose normal
 /// is `n` (the sketch it was drawn in).
 pub fn make(app: &mut SolveApp, a: V3, b: V3, n: V3) {

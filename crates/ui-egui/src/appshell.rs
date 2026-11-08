@@ -5,6 +5,7 @@
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
+use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
 use crate::icons;
@@ -608,6 +609,7 @@ fn selected_feature(app: &SolveApp) -> Option<(String, u64)> {
 /// angle, …), each typed in and applied on Enter.
 pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     crate::cad::drafting_settings(app, ctx);
+    crate::hatch_tool::window(app, ctx);
     if !app.shell_ui.properties || !design_shown(app) {
         return;
     }
@@ -617,6 +619,7 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     let mut apply: Option<(u64, usize, String)> = None;
     let mut edit_sketch: Option<String> = None;
     let mut edit_feature: Option<u64> = None;
+    let mut blend_apply: Option<(u64, usize, String)> = None;
     egui::Window::new("Properties")
         .open(&mut open)
         .default_pos(pos2(ctx.content_rect().right() - 320.0, 160.0))
@@ -657,6 +660,25 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                     ui.end_row();
                 }
+                if let Some(rows) = blend_rows(app, *feature) {
+                    for (k, (label, value)) in rows.iter().enumerate() {
+                        ui.label(*label);
+                        let key = 1000 + k;
+                        let editing = app.shell_ui.editing.as_ref().filter(|(f, i, _)| f == feature && *i == key).map(|e| e.2.clone());
+                        let mut text = editing.unwrap_or(value.clone());
+                        let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
+                        if resp.changed() || resp.has_focus() {
+                            app.shell_ui.editing = Some((*feature, key, text.clone()));
+                        }
+                        if resp.lost_focus() {
+                            if ui.input(|k| k.key_pressed(egui::Key::Enter)) && text.trim() != value.trim() {
+                                blend_apply = Some((*feature, k, text.clone()));
+                            }
+                            app.shell_ui.editing = None;
+                        }
+                        ui.end_row();
+                    }
+                }
                 if let Some(e) = info["error"].as_str() {
                     ui.label("Error");
                     ui.colored_label(Tokens::get().error, e);
@@ -683,6 +705,12 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
             Err(e) => app.set_status(e, true),
         }
     }
+    if let Some((feature, row, text)) = blend_apply {
+        match set_blend(app, feature, row, &text) {
+            Ok(()) => app.set_status("Applied", false),
+            Err(e) => app.set_status(e, true),
+        }
+    }
     if let Some(body) = edit_sketch {
         crate::objects::edit_object(app, &body);
     }
@@ -691,9 +719,95 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// A Blend's two sketches (base, top), when `feature` is a loft between two sketches.
+fn blend_sketches(app: &SolveApp, feature: u64) -> Option<(u64, u64)> {
+    match &app.session.doc.feature(feature)?.kind {
+        solidcraft_engine::doc::FeatureKind::Loft { sections, .. } if sections.len() == 2 => {
+            let (a, b) = (sections.first()?.sketch.0, sections.get(1)?.sketch.0);
+            (a != b).then_some((a, b))
+        }
+        _ => None,
+    }
+}
+
+fn offset_expr(app: &mut SolveApp, sketch: u64) -> String {
+    app.session
+        .execute("timeline.set_plane_offset", &json!({"sketch": sketch, "read": true}))
+        .ok()
+        .and_then(|v| v["offset"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "0 mm".into())
+}
+
+/// A length expression's value in mm, when it is a plain number with or without `mm`.
+fn plain_mm(e: &str) -> Option<f64> {
+    e.trim().trim_end_matches("mm").trim().parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// The distance between a Blend's sketch planes, along the base's normal.
+fn blend_distance(app: &SolveApp, base: u64, top: u64) -> Option<f64> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let (b, t) = (st.sketch(base)?.plane, st.sketch(top)?.plane);
+    Some((t.origin - b.origin).dot(b.normal()))
+}
+
+/// Start, End and Distance of a Blend (like an Extrusion's), for the Properties window.
+fn blend_rows(app: &mut SolveApp, feature: u64) -> Option<Vec<(&'static str, String)>> {
+    let (base, top) = blend_sketches(app, feature)?;
+    let start = offset_expr(app, base);
+    let end = offset_expr(app, top);
+    let d = blend_distance(app, base, top)?;
+    let fmt = |v: f64| {
+        let r = (v * 1e4).round() / 1e4;
+        format!("{} mm", if r == 0.0 { 0.0 } else { r })
+    };
+    Some(vec![("Start", start), ("End", end), ("Distance", fmt(d.abs()))])
+}
+
+fn set_blend(app: &mut SolveApp, feature: u64, row: usize, text: &str) -> Result<(), String> {
+    let (base, top) = blend_sketches(app, feature).ok_or("not a Blend")?;
+    match row {
+        0 => app.run("timeline.set_plane_offset", json!({"sketch": base, "offset": text})).map(|_| ()),
+        1 => app.run("timeline.set_plane_offset", json!({"sketch": top, "offset": text})).map(|_| ()),
+        _ => {
+            let want = plain_mm(text).filter(|v| *v > 0.0).ok_or("Distance: a length above zero, in mm")?;
+            let now = blend_distance(app, base, top).ok_or("the Blend's sketches are gone")?;
+            if now.abs() < 1e-9 {
+                return Err("the Blend's sketches lie on one plane: set End instead".into());
+            }
+            // The top moves along the base's normal, keeping its side.
+            let delta = (want - now.abs()) * now.signum();
+            let end = offset_expr(app, top);
+            // The top's offset runs along its own base plane's normal, which may face the
+            // other way from the Blend's base.
+            let st = crate::open_meshing::session_world(&app.session);
+            let same = match (st.sketch(base), st.sketch(top)) {
+                (Some(b), Some(t)) => t.plane.normal().dot(b.plane.normal()) >= 0.0,
+                _ => true,
+            };
+            drop(st);
+            let delta = if same { delta } else { -delta };
+            let next = match plain_mm(&end) {
+                Some(v) => format!("{} mm", ((v + delta) * 1e6).round() / 1e6),
+                None => format!("({end}) + {delta} mm"),
+            };
+            app.run("timeline.set_plane_offset", json!({"sketch": top, "offset": next})).map(|_| ())
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn blend_rows_for_tests(app: &mut SolveApp, feature: u64) -> Option<Vec<(&'static str, String)>> {
+    blend_rows(app, feature)
+}
+
+#[cfg(test)]
+pub(crate) fn set_blend_for_tests(app: &mut SolveApp, feature: u64, row: usize, text: &str) -> Result<(), String> {
+    set_blend(app, feature, row, text)
+}
+
 /// Saved with the preferences.
 pub fn prefs(app: &SolveApp) -> Value {
-    json!({"quick": app.shell_ui.quick, "properties": app.shell_ui.properties, "drafting": app.cad.settings.to_json()})
+    json!({"quick": app.shell_ui.quick, "properties": app.shell_ui.properties, "drafting": app.cad.settings.to_json(), "hatch": crate::hatch_tool::to_json(app)})
 }
 
 pub fn load_prefs(app: &mut SolveApp, v: &Value) {
@@ -705,6 +819,9 @@ pub fn load_prefs(app: &mut SolveApp, v: &Value) {
     }
     if let Some(d) = v.get("drafting") {
         app.cad.settings.load(d);
+    }
+    if let Some(h) = v.get("hatch") {
+        crate::hatch_tool::load(app, h);
     }
 }
 

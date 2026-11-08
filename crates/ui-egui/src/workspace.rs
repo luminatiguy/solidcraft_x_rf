@@ -46,7 +46,7 @@ pub const CONSTRAINT_GALLERY: &[&str] = &[
 
 /// Small ribbon tools, drawn as icon cells in columns of three after a section's large buttons
 /// (CADCraft's ribbon): every listed command of these sections past its promoted ones.
-pub const SMALL_TOOLS: &[(&str, &str)] = &[("SKETCH", "DRAW"), ("SKETCH", "MODIFY")];
+pub const SMALL_TOOLS: &[(&str, &str)] = &[("SKETCH", "DRAW"), ("SKETCH", "MODIFY"), ("VIEW", "GRAPHICS")];
 
 /// Is `id` a small tool cell of section `tab`/`panel`?
 pub fn small_tool(tab: &str, panel: &str, id: &str) -> bool {
@@ -165,18 +165,20 @@ pub const SECTIONS: &[Section] = &[
         promoted: 0,
         ids: &["form.void.extrusion", "form.void.blend", "form.void.revolve", "form.void.sweep", "form.void.swept_blend"],
     },
-    Section { tab: "MODEL", panel: "WORK PLANE", promoted: 3, ids: &["workplane.set", "workplane.show", "workplane.reference"] },
+    Section {
+        tab: "MODEL",
+        panel: "WORK PLANE",
+        promoted: 4,
+        ids: &["workplane.set", "workplane.show", "workplane.reference", "workplane.show_references"],
+    },
     Section { tab: "MODEL", panel: "DRAW", promoted: 1, ids: &["model.line"] },
     // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
     Section { tab: "MODEL", panel: "FINISH EDITING", promoted: 1, ids: &["component.finish_edit"] },
     // Whole objects: moved, copied, turned, mirrored, joined and cut (`objects.rs`).
     Section { tab: "MODIFY", panel: "MODIFY", promoted: 4, ids: &["obj.move", "obj.copy", "obj.rotate", "obj.mirror"] },
     Section { tab: "MODIFY", panel: "GEOMETRY", promoted: 3, ids: &["obj.join", "obj.unjoin", "obj.cut"] },
-    // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
-    Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
-    Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
-    Section { tab: "SURFACE", panel: "EDIT", promoted: 4, ids: &["surface.trim", "surface.untrim", "surface.extend", "surface.stitch"] },
-    Section { tab: "SURFACE", panel: "CONVERT", promoted: 2, ids: &["surface.thicken", "mesh.convert"] },
+    // SURFACE: patterns on faces (`hatch_tool.rs`).
+    Section { tab: "SURFACE", panel: "HATCH", promoted: 1, ids: &["hatch.pattern"] },
     Section {
         tab: "ASSEMBLE",
         panel: "COMPONENTS",
@@ -287,9 +289,24 @@ pub const SECTIONS: &[Section] = &[
             "view.tool",
             "view.spin",
             "view.visual_style",
+            "view.navigation_bar",
+        ],
+    },
+    // The navigation bar's Graphics menu, as buttons (`view_graphics.rs`).
+    Section {
+        tab: "VIEW",
+        panel: "GRAPHICS",
+        promoted: 4,
+        ids: &[
             "view.grid",
             "view.ground_shadow",
-            "view.navigation_bar",
+            "view.ambient_occlusion",
+            "view.perspective",
+            "view.graphics_preset",
+            "view.auto_ortho_faces",
+            "view.tool_cursor",
+            "view.angle_readout",
+            "view.agent_cursor",
         ],
     },
     Section { tab: "VIEW", panel: "SELECT", promoted: 0, ids: &[] },
@@ -423,6 +440,7 @@ const LEGACY_RENDER_SECTIONS: &[Section] = &[
 /// Compact source labels for painted big buttons only. Menus, search and tooltips
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
+    ("workplane.show_references", "Show Ref. Planes"),
     ("render.batch", "All Shots"),
     ("render.cancel", "Cancel"),
     ("render.export", "Export Image"),
@@ -574,7 +592,7 @@ pub fn layout<'a>(tab: &str, panel: &str, specs: &[&'a CommandSpec]) -> Option<(
     let section = SECTIONS.iter().find(|s| s.tab == tab && s.panel == panel)?;
     let mut out: Vec<_> = section.ids.iter().filter_map(|id| specs.iter().find(|c| c.id == *id).copied()).collect();
     // The SKETCH tab lists only its own tools: the earlier sketch commands stay out of it.
-    if matches!(section.tab, "SKETCH" | "MODIFY" | "MODEL") {
+    if matches!(section.tab, "SKETCH" | "MODIFY" | "MODEL" | "SURFACE") || (section.tab, section.panel) == ("VIEW", "GRAPHICS") {
         return Some((out, section.promoted));
     }
     for c in specs.iter().filter(|c| destination(c) == Some((section.tab, section.panel))) {
@@ -1509,17 +1527,14 @@ mod tests {
     /// New Sketch is on the SURFACE tab too, and a sketch started there stays on that tab until
     /// it opens.
     #[test]
-    fn new_sketch_starts_from_the_surface_tab() {
+    fn the_surface_tab_starts_hatch_pattern() {
         let mut h = crate::scenario::Harness::new();
         h.step(&json!({"click": {"handle": "tab:SURFACE"}})).unwrap();
         h.frames(2);
-        h.step(&json!({"click": {"handle": "button:sketch.create"}})).unwrap();
+        h.step(&json!({"click": {"handle": "button:hatch.pattern"}})).unwrap();
         h.frames(2);
-        assert_eq!(h.app.ui.tab, "SURFACE", "New Sketch is on this tab, so it stays");
-        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
-        h.frames(2);
-        assert!(h.app.session.active_sketch.is_some());
-        assert_eq!(h.app.ui.tab, "SKETCH");
+        assert_eq!(h.app.ui.tab, "SURFACE");
+        assert!(h.app.hatch.active, "the SURFACE tab's one tool");
     }
 
     /// Move 3D Point stays for agents, MCP and scripts; people move a drawn 3D point with the

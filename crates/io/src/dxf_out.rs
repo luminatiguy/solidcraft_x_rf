@@ -107,6 +107,29 @@ pub enum DxfShape {
         angle_deg: f64,
         text: String,
     },
+    /// A pattern-filled HATCH over closed boundary loops (the first outer, the others holes),
+    /// with its pattern lines as they lie in the drawing (scaled and turned already).
+    Hatch {
+        loops: Vec<Vec<Vec2>>,
+        pattern: String,
+        lines: Vec<HatchLine>,
+    },
+    /// Shapes kept together as one block (a BLOCK definition and an INSERT of it at the origin).
+    Block {
+        name: String,
+        shapes: Vec<DxfShape>,
+    },
+}
+
+/// One line family of a hatch pattern, in the drawing: its angle, a point on its first line,
+/// the step to the next line (a vector in the drawing) and its dashes (positive drawn, negative
+/// gaps, 0 dots; none for a continuous line).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HatchLine {
+    pub angle_deg: f64,
+    pub base: Vec2,
+    pub offset: Vec2,
+    pub dashes: Vec<f64>,
 }
 
 /// An entity on a layer.
@@ -235,6 +258,14 @@ impl DxfShape {
             }
             // A spline lies within the hull of its control points.
             DxfShape::Spline { ctrl, .. } => out.extend(ctrl.iter().copied()),
+            DxfShape::Hatch { loops, .. } => out.extend(loops.iter().flatten().copied()),
+            DxfShape::Block { shapes, .. } => {
+                for shape in shapes.iter().take(1_000_000) {
+                    if !matches!(shape, DxfShape::Block { .. }) {
+                        shape.sample(out);
+                    }
+                }
+            }
             // Where a viewer puts the letters depends on its font: 0.8 heights for each.
             DxfShape::Text { at, height, angle_deg, text } => {
                 let (along, up) = (Vec2::from_angle(angle_deg.to_radians()), Vec2::from_angle(angle_deg.to_radians()).perp());
@@ -484,8 +515,20 @@ pub fn write_dxf_drawing(layers: &[DxfLayer], entities: &[DxfEntity]) -> Result<
     o.code(2, "Standard");
     o.code(70, 0);
     o.code(0, "ENDTAB");
-    let t = o.table("BLOCK_RECORD", 2);
-    for (h, name) in [(&model, "*Model_Space"), (&paper, "*Paper_Space")] {
+    // The user blocks (a hatch on a curved face, kept as one object), each with a record.
+    let blocks: Vec<(&str, &[DxfShape], &str)> = entities
+        .iter()
+        .filter_map(|e| match &e.shape {
+            DxfShape::Block { name, shapes } => Some((name.as_str(), shapes.as_slice(), e.layer.as_str())),
+            _ => None,
+        })
+        .collect();
+    let block_handles: Vec<String> = blocks.iter().map(|_| o.handle()).collect();
+    let t = o.table("BLOCK_RECORD", 2 + blocks.len());
+    let records = [(model.clone(), "*Model_Space".to_string()), (paper.clone(), "*Paper_Space".to_string())]
+        .into_iter()
+        .chain(block_handles.iter().zip(&blocks).map(|(h, b)| (h.clone(), block_name(b.0))));
+    for (h, name) in records {
         o.code(0, "BLOCK_RECORD");
         o.code(5, h);
         o.code(330, &t);
@@ -500,104 +543,40 @@ pub fn write_dxf_drawing(layers: &[DxfLayer], entities: &[DxfEntity]) -> Result<
     o.code(2, "BLOCKS");
     o.block(&model, "*Model_Space", false);
     o.block(&paper, "*Paper_Space", true);
+    for ((name, shapes, layer), h) in blocks.iter().zip(&block_handles) {
+        let name = block_name(name);
+        let begin = o.handle();
+        o.code(0, "BLOCK");
+        o.code(5, begin);
+        o.code(330, h);
+        o.code(100, "AcDbEntity");
+        o.code(8, "0");
+        o.code(100, "AcDbBlockBegin");
+        o.code(2, &name);
+        o.code(70, 0);
+        o.point(10, Vec2::ZERO);
+        o.code(3, &name);
+        o.code(1, "");
+        for (i, shape) in shapes.iter().enumerate() {
+            if matches!(shape, DxfShape::Block { .. }) {
+                continue;
+            }
+            entity(&mut o, &DxfEntity { layer: layer.to_string(), shape: shape.clone() }, h, i)?;
+        }
+        let end = o.handle();
+        o.code(0, "ENDBLK");
+        o.code(5, end);
+        o.code(330, h);
+        o.code(100, "AcDbEntity");
+        o.code(8, "0");
+        o.code(100, "AcDbBlockEnd");
+    }
     o.code(0, "ENDSEC");
 
     o.code(0, "SECTION");
     o.code(2, "ENTITIES");
     for (index, e) in entities.iter().enumerate() {
-        let kind = match &e.shape {
-            DxfShape::Line(..) => "LINE",
-            DxfShape::Polyline { .. } => "LWPOLYLINE",
-            DxfShape::Circle { .. } => "CIRCLE",
-            DxfShape::Arc { .. } => "ARC",
-            DxfShape::Ellipse { .. } => "ELLIPSE",
-            DxfShape::Spline { .. } => "SPLINE",
-            DxfShape::Text { .. } => "TEXT",
-        };
-        let h = o.handle();
-        o.code(0, kind);
-        o.code(5, h);
-        o.code(330, &model);
-        o.code(100, "AcDbEntity");
-        o.code(8, if e.layer.trim().is_empty() { "0" } else { e.layer.as_str() });
-        match &e.shape {
-            DxfShape::Polyline { points } => {
-                o.code(100, "AcDbPolyline");
-                o.code(90, points.len());
-                // Autodesk DXF reference: bit 128 (PLINEGEN) continues the dash pattern.
-                o.code(70, 128);
-                for p in points {
-                    o.num(10, p.x);
-                    o.num(20, p.y);
-                }
-            }
-            DxfShape::Line(a, b) => {
-                o.code(100, "AcDbLine");
-                o.point(10, *a);
-                o.point(11, *b);
-            }
-            DxfShape::Circle { c, r } => {
-                o.code(100, "AcDbCircle");
-                o.point(10, *c);
-                o.num(40, *r);
-            }
-            DxfShape::Arc { c, r, a0, a1 } => {
-                o.code(100, "AcDbCircle");
-                o.point(10, *c);
-                o.num(40, *r);
-                o.code(100, "AcDbArc");
-                o.num(50, *a0);
-                o.num(51, *a1);
-            }
-            DxfShape::Ellipse { c, major, ratio, t0, t1 } => {
-                o.code(100, "AcDbEllipse");
-                o.point(10, *c);
-                o.point(11, *major);
-                o.num(210, 0.0);
-                o.num(220, 0.0);
-                o.num(230, 1.0);
-                o.num(40, *ratio);
-                o.num(41, *t0);
-                o.num(42, *t1);
-            }
-            DxfShape::Spline { degree, knots, ctrl, weights } => {
-                o.code(100, "AcDbSpline");
-                o.num(210, 0.0);
-                o.num(220, 0.0);
-                o.num(230, 1.0);
-                // Flags: 4 rational, 8 planar.
-                o.code(70, 8 + if weights.is_some() { 4 } else { 0 });
-                o.code(71, degree);
-                o.code(72, knots.len());
-                o.code(73, ctrl.len());
-                o.code(74, 0);
-                // Knots, then weights, then control points: the order of the reference.
-                for k in knots {
-                    o.num(40, *k);
-                }
-                for w in weights.iter().flatten() {
-                    o.num(41, *w);
-                }
-                for p in ctrl {
-                    o.point(10, *p);
-                }
-            }
-            DxfShape::Text { at, height, angle_deg, text } => {
-                o.code(100, "AcDbText");
-                o.point(10, *at);
-                o.num(40, *height);
-                let value =
-                    text_value(text).map_err(|error| IoError::Invalid(format!("DXF TEXT entity {} on layer {:?}: {error}", index + 1, e.layer)))?;
-                o.code(1, value);
-                o.num(50, *angle_deg);
-                // Centred (72 = 1): a reader that places the text by the second alignment point
-                // and one that takes the first both put its middle on `at`.
-                o.code(72, 1);
-                o.point(11, *at);
-                o.code(100, "AcDbText");
-                o.code(73, 0);
-            }
-        }
+        entity(&mut o, e, &model, index)?;
     }
     o.code(0, "ENDSEC");
 
@@ -641,6 +620,161 @@ pub fn write_dxf_drawing(layers: &[DxfLayer], entities: &[DxfEntity]) -> Result<
     head.point(10, hi);
     head.code(0, "ENDSEC");
     Ok(head.s + &o.s)
+}
+
+/// Block names keep to letters, digits, `_` and `-`.
+fn block_name(name: &str) -> String {
+    let n: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).take(200).collect();
+    if n.is_empty() { "SC_BLOCK".into() } else { n }
+}
+
+/// One entity, owned by the block record `owner` (model space or a user block).
+fn entity(o: &mut Out, e: &DxfEntity, owner: &str, index: usize) -> Result<()> {
+    let kind = match &e.shape {
+        DxfShape::Line(..) => "LINE",
+        DxfShape::Polyline { .. } => "LWPOLYLINE",
+        DxfShape::Circle { .. } => "CIRCLE",
+        DxfShape::Arc { .. } => "ARC",
+        DxfShape::Ellipse { .. } => "ELLIPSE",
+        DxfShape::Spline { .. } => "SPLINE",
+        DxfShape::Text { .. } => "TEXT",
+        DxfShape::Hatch { .. } => "HATCH",
+        DxfShape::Block { .. } => "INSERT",
+    };
+    let h = o.handle();
+    o.code(0, kind);
+    o.code(5, h);
+    o.code(330, owner);
+    o.code(100, "AcDbEntity");
+    o.code(8, if e.layer.trim().is_empty() { "0" } else { e.layer.as_str() });
+    match &e.shape {
+        DxfShape::Polyline { points } => {
+            o.code(100, "AcDbPolyline");
+            o.code(90, points.len());
+            // Autodesk DXF reference: bit 128 (PLINEGEN) continues the dash pattern.
+            o.code(70, 128);
+            for p in points {
+                o.num(10, p.x);
+                o.num(20, p.y);
+            }
+        }
+        DxfShape::Line(a, b) => {
+            o.code(100, "AcDbLine");
+            o.point(10, *a);
+            o.point(11, *b);
+        }
+        DxfShape::Circle { c, r } => {
+            o.code(100, "AcDbCircle");
+            o.point(10, *c);
+            o.num(40, *r);
+        }
+        DxfShape::Arc { c, r, a0, a1 } => {
+            o.code(100, "AcDbCircle");
+            o.point(10, *c);
+            o.num(40, *r);
+            o.code(100, "AcDbArc");
+            o.num(50, *a0);
+            o.num(51, *a1);
+        }
+        DxfShape::Ellipse { c, major, ratio, t0, t1 } => {
+            o.code(100, "AcDbEllipse");
+            o.point(10, *c);
+            o.point(11, *major);
+            o.num(210, 0.0);
+            o.num(220, 0.0);
+            o.num(230, 1.0);
+            o.num(40, *ratio);
+            o.num(41, *t0);
+            o.num(42, *t1);
+        }
+        DxfShape::Spline { degree, knots, ctrl, weights } => {
+            o.code(100, "AcDbSpline");
+            o.num(210, 0.0);
+            o.num(220, 0.0);
+            o.num(230, 1.0);
+            // Flags: 4 rational, 8 planar.
+            o.code(70, 8 + if weights.is_some() { 4 } else { 0 });
+            o.code(71, degree);
+            o.code(72, knots.len());
+            o.code(73, ctrl.len());
+            o.code(74, 0);
+            // Knots, then weights, then control points: the order of the reference.
+            for k in knots {
+                o.num(40, *k);
+            }
+            for w in weights.iter().flatten() {
+                o.num(41, *w);
+            }
+            for p in ctrl {
+                o.point(10, *p);
+            }
+        }
+        DxfShape::Text { at, height, angle_deg, text } => {
+            o.code(100, "AcDbText");
+            o.point(10, *at);
+            o.num(40, *height);
+            let value =
+                text_value(text).map_err(|error| IoError::Invalid(format!("DXF TEXT entity {} on layer {:?}: {error}", index + 1, e.layer)))?;
+            o.code(1, value);
+            o.num(50, *angle_deg);
+            // Centred (72 = 1): a reader that places the text by the second alignment point
+            // and one that takes the first both put its middle on `at`.
+            o.code(72, 1);
+            o.point(11, *at);
+            o.code(100, "AcDbText");
+            o.code(73, 0);
+        }
+        DxfShape::Hatch { loops, pattern, lines } => {
+            o.code(100, "AcDbHatch");
+            o.point(10, Vec2::ZERO);
+            o.num(210, 0.0);
+            o.num(220, 0.0);
+            o.num(230, 1.0);
+            o.code(2, block_name(pattern));
+            // A pattern fill (not solid), not associative.
+            o.code(70, 0);
+            o.code(71, 0);
+            let loops: Vec<&Vec<Vec2>> = loops.iter().filter(|l| l.len() >= 3).collect();
+            o.code(91, loops.len());
+            for (i, l) in loops.iter().enumerate() {
+                // A polyline path (2), the first one the outer boundary (+1).
+                o.code(92, if i == 0 { 3 } else { 2 });
+                o.code(72, 0);
+                o.code(73, 1);
+                o.code(93, l.len());
+                for p in l.iter() {
+                    o.num(10, p.x);
+                    o.num(20, p.y);
+                }
+                o.code(97, 0);
+            }
+            // Odd parity (holes stay empty), a custom pattern given in full below.
+            o.code(75, 0);
+            o.code(76, 2);
+            o.num(52, 0.0);
+            o.num(41, 1.0);
+            o.code(77, 0);
+            o.code(78, lines.len());
+            for l in lines {
+                o.num(53, l.angle_deg);
+                o.num(43, l.base.x);
+                o.num(44, l.base.y);
+                o.num(45, l.offset.x);
+                o.num(46, l.offset.y);
+                o.code(79, l.dashes.len());
+                for d in &l.dashes {
+                    o.num(49, *d);
+                }
+            }
+            o.code(98, 0);
+        }
+        DxfShape::Block { name, .. } => {
+            o.code(100, "AcDbBlockReference");
+            o.code(2, block_name(name));
+            o.point(10, Vec2::ZERO);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

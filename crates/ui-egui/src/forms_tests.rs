@@ -277,3 +277,85 @@ fn an_edited_extrusion_sketch_rebuilds_the_object() {
     // The outer loop takes over: the inner one is now a hole and the object is 30 wide.
     assert!((area(&h) - 30.0).abs() < 1e-6, "{}", area(&h));
 }
+
+#[test]
+fn deleting_a_blend_body_takes_its_sketches() {
+    let mut h = Harness::new();
+    start(&mut h, "form.blend");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [-10, -10], "p1": [10, 10]})).unwrap();
+    finish(&mut h);
+    h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 6})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    assert_eq!(bodies(&h), 1);
+    let body = h.app.session.model.state().bodies[0].name.clone();
+    h.app.session.selection = vec![Sel::Body { name: body }];
+    crate::delete::delete_selection(&mut h.app);
+    h.frames(20);
+    assert_eq!(bodies(&h), 0);
+    let sketches = h.app.session.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).count();
+    assert_eq!(sketches, 0, "the Blend's sketches went with it: {:?}", h.app.menu.confirm.as_ref().map(|c| &c.report));
+}
+
+#[test]
+fn a_blend_shows_start_end_and_distance_and_takes_a_new_distance() {
+    let mut h = Harness::new();
+    start(&mut h, "form.blend");
+    let base = h.app.session.active_sketch.unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [-10, -10], "p1": [10, 10]})).unwrap();
+    finish(&mut h);
+    let top = h.app.session.active_sketch.unwrap();
+    h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 6})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    let loft = h.app.session.doc.features.last().unwrap().id;
+    let gap = |h: &Harness| {
+        let st = crate::open_meshing::session_world(&h.app.session);
+        let (b, t) = (st.sketch(base).unwrap().plane, st.sketch(top).unwrap().plane);
+        (t.origin - b.origin).dot(b.normal())
+    };
+    let rows = crate::appshell::blend_rows_for_tests(&mut h.app, loft).unwrap();
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), ["Start", "End", "Distance"]);
+    crate::appshell::set_blend_for_tests(&mut h.app, loft, 2, "35").unwrap();
+    h.frames(5);
+    assert!((gap(&h) - 35.0).abs() < 1e-6, "{}", gap(&h));
+    crate::appshell::set_blend_for_tests(&mut h.app, loft, 0, "5 mm").unwrap();
+    h.frames(5);
+    assert!((gap(&h) - 30.0).abs() < 1e-6, "Start moves the base only: {}", gap(&h));
+    assert_eq!(bodies(&h), 1, "the Blend rebuilt: {:?}", h.app.session.log.last());
+}
+
+#[test]
+fn a_sweep_path_may_be_open_when_drawn_with_the_line_tool() {
+    use crate::cad::Input;
+    let mut h = Harness::new();
+    start(&mut h, "form.sweep");
+    let pt = |x: f64, y: f64| Input::Point { p: solidcore_record::Vec2::new(x, y), curve: None };
+    for p in [pt(0.0, 0.0), pt(40.0, 0.0), pt(40.0, 30.0)] {
+        crate::cad::feed(&mut h.app, p);
+    }
+    crate::cad::feed(&mut h.app, Input::Enter);
+    finish(&mut h);
+    let profile = h.app.session.active_sketch;
+    assert!(profile.is_some(), "an open path goes on to the profile: {:?}", h.app.status);
+    h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 3})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    assert_eq!(bodies(&h), 1);
+}
+
+#[test]
+fn the_reference_plane_tool_keeps_the_view_and_sketches_square_to_it() {
+    let mut h = Harness::new();
+    h.app.cam.set_view(solidcraft_engine::render::StandardView::Iso);
+    h.app.cam_anim = None;
+    let before = h.app.cam;
+    h.app.start("workplane.reference");
+    h.frames(10);
+    let sk = h.app.session.active_sketch.expect("a sketch");
+    assert_eq!(h.app.settled_cam().yaw, before.yaw);
+    assert_eq!(h.app.settled_cam().pitch, before.pitch);
+    let st = crate::open_meshing::session_world(&h.app.session);
+    let n = st.sketch(sk).unwrap().plane.normal();
+    assert!(n.dot(before.basis().2).abs() > 0.999, "square to the view: {n:?}");
+}

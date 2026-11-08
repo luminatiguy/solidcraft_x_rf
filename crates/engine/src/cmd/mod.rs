@@ -41,6 +41,7 @@ mod face;
 mod features;
 mod features_more;
 mod forms;
+pub mod hatch;
 mod join_pieces;
 pub(crate) use construct::{GeoForm, GeoFormError, REF as GEO_REF_FORMS, SKETCH_PART, geo_form, is_model_axis, plane_axis_point_kind};
 pub(crate) use face::{FaceRefForm, face_ref_form};
@@ -333,6 +334,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(sketch_modify::COMMANDS.iter());
     v.extend(sketch_project::COMMANDS.iter());
     v.extend(forms::COMMANDS.iter());
+    v.extend(hatch::COMMANDS.iter());
     v.extend(cadtools::COMMANDS.iter());
     v.extend(features::COMMANDS.iter());
     v.extend(features_more::COMMANDS.iter());

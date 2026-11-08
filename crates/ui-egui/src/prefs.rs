@@ -322,8 +322,21 @@ pub fn choose_nav_preset(prefs: &mut Prefs, preset: &NavPreset) {
     }
 }
 /// Stable control-channel names; presentation labels may be shorter.
-pub const PAGES: &[&str] =
-    &["General", "Appearance", "Layout", "Graphics", "Design", "Sketch", "Tools", "Navigation", "3D mouse", "Shortcuts", "Assistant", "Plugins"];
+pub const PAGES: &[&str] = &[
+    "General",
+    "Appearance",
+    "Layout",
+    "Graphics",
+    "Design",
+    "Sketch",
+    "Tools",
+    "Navigation",
+    "3D mouse",
+    "Shortcuts",
+    "Assistant",
+    "Plugins",
+    "Hatch Patterns",
+];
 pub const PAGE_GENERAL: usize = 0;
 pub const PAGE_APPEARANCE: usize = 1;
 pub const PAGE_LAYOUT: usize = 2;
@@ -336,6 +349,7 @@ pub const PAGE_MOUSE3D: usize = 8;
 pub const PAGE_SHORTCUTS: usize = 9;
 pub const PAGE_ASSISTANT: usize = 10;
 pub const PAGE_PLUGINS: usize = 11;
+pub const PAGE_HATCH: usize = 12;
 /// What Preferences accepts for `parameter_list_rows`: `parameters.complete` answers at most 200.
 pub const PARAMETER_LIST_ROWS: std::ops::RangeInclusive<u16> = 5..=200;
 const WINDOW_PAGES: &[ui_kit::WindowPage<SolveApp>] = &[
@@ -434,6 +448,14 @@ const WINDOW_PAGES: &[ui_kit::WindowPage<SolveApp>] = &[
         handle: "prefs:page:Plugins",
         scroll: true,
         draw: window_page::<PAGE_PLUGINS>,
+    },
+    ui_kit::WindowPage {
+        icon: "hatch_pattern",
+        label: "prefs.hatch.title",
+        group: None,
+        handle: "prefs:page:Hatch Patterns",
+        scroll: true,
+        draw: window_page::<PAGE_HATCH>,
     },
 ];
 
@@ -2917,6 +2939,7 @@ fn draw_page(app: &mut SolveApp, ui: &mut egui::Ui, index: usize, t: &Tokens) {
         PAGE_NAVIGATION => navigation::show(app, ui, t),
         PAGE_GRAPHICS => graphics::show(app, ui),
         PAGE_SKETCH => sketch::show(app, ui),
+        PAGE_HATCH => crate::hatch_tool::prefs_page(app, ui),
         _ => {}
     }
 }
@@ -6164,7 +6187,8 @@ mod tests {
                 "3D mouse",
                 "Shortcuts",
                 "Assistant",
-                "Plugins"
+                "Plugins",
+                "Hatch Patterns"
             ]
         );
         assert_eq!(WINDOW_PAGES.len(), PAGES.len());

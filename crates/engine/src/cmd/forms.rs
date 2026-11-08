@@ -57,6 +57,16 @@ fn model_line(_: &mut Session, _: &Value) -> Result<Value> {
     interactive("model.line", "sketch.create and sketch.line")
 }
 
+fn hatch_pattern(_: &mut Session, _: &Value) -> Result<Value> {
+    interactive("hatch.pattern", "hatch.apply")
+}
+fn show_references(_: &mut Session, _: &Value) -> Result<Value> {
+    interactive("workplane.show_references", "construct.plane.list")
+}
+fn window_setting(_: &mut Session, _: &Value) -> Result<Value> {
+    Err(bad("view", "a window setting: the ribbon button toggles it; over the control channel use ui.set"))
+}
+
 fn objects(_: &mut Session, _: &Value) -> Result<Value> {
     interactive("obj", "solid.move, solid.mirror or solid.combine")
 }
@@ -119,7 +129,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .doc_only()
         .params("interactive: sketch the path, then a profile across each end; Finish blends them along the path"),
     CommandSpec::new("form.void.extrusion", "Void Extrusion", void_extrusion)
-        .icon("hole")
+        .icon("extrude")
         .noundo()
         .doc_only()
         .params("interactive: as form.extrusion, cutting"),
@@ -150,6 +160,31 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .doc_only()
         .params("interactive: show or hide the work plane's grid"),
+    CommandSpec::new("hatch.pattern", "Hatch Pattern", hatch_pattern)
+        .icon("hatch_pattern")
+        .noundo()
+        .doc_only()
+        .params("interactive: choose a pattern, its scale and angle, then click faces to hatch them (Shift+click removes); hatch.apply is the programmatic form"),
+    CommandSpec::new("workplane.show_references", "Show Reference Planes", show_references)
+        .icon("plane")
+        .noundo()
+        .doc_only()
+        .params("interactive: show every reference plane, as an outline where it is not seen edge-on"),
+    CommandSpec::new("view.auto_ortho_faces", "Ortho on Faces", window_setting)
+        .icon("camera")
+        .noundo()
+        .doc_only()
+        .params("window setting: perspective while orbiting, orthographic when looking square at a face"),
+    CommandSpec::new("view.tool_cursor", "Tool at Cursor", window_setting)
+        .icon("select")
+        .noundo()
+        .doc_only()
+        .params("window setting: show the running tool's icon at the cursor"),
+    CommandSpec::new("view.agent_cursor", "Assistant Cursor", window_setting)
+        .icon("select")
+        .noundo()
+        .doc_only()
+        .params("window setting: show the assistant's cursor while it works"),
     CommandSpec::new("model.line", "Model Line", model_line)
         .icon("line")
         .noundo()

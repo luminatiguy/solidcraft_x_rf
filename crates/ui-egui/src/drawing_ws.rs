@@ -12,7 +12,7 @@ use crate::SolveApp;
 pub const ACCENT: Color32 = Color32::from_rgb(0, 170, 160);
 
 /// The views a cell can show, as (command value, label).
-pub const VIEWS: [(&str, &str); 8] = [
+pub const VIEWS: [(&str, &str); 9] = [
     ("front", "Front"),
     ("back", "Back"),
     ("left", "Left"),
@@ -20,6 +20,8 @@ pub const VIEWS: [(&str, &str); 8] = [
     ("top", "Top"),
     ("bottom", "Bottom"),
     ("iso", "Home"),
+    // The Design workspace's view as it was left, in perspective when it was.
+    ("current", "Current view"),
     ("none", "Empty"),
 ];
 
@@ -46,6 +48,8 @@ pub struct State {
     /// The sheet view: zoom (1 = the whole sheet fits) and pan in screen points.
     zoom: f32,
     pan: Vec2,
+    /// The Project Browser's folds before Drawing folded it: given back on return to Design.
+    browser_before: Option<(bool, bool)>,
 }
 
 impl Default for State {
@@ -63,6 +67,7 @@ impl Default for State {
             pan: Vec2::ZERO,
             scale: None,
             sheet: 1,
+            browser_before: None,
         }
     }
 }
@@ -102,6 +107,19 @@ pub fn default_cells(n: usize) -> Vec<Cell> {
 
 /// Open or close the workspace.
 pub fn set_open(app: &mut SolveApp, open: bool) {
+    // The sheet takes the room of the Project Browser: it folds on the way in and comes back as
+    // it was on the way out.
+    if open && !app.drawing_ws.open {
+        app.drawing_ws.browser_before = Some((app.preferences.browser_collapsed, app.preferences.timeline_left_browser_collapsed));
+        app.preferences.browser_collapsed = true;
+        app.preferences.timeline_left_browser_collapsed = true;
+    } else if !open
+        && app.drawing_ws.open
+        && let Some((a, b)) = app.drawing_ws.browser_before.take()
+    {
+        app.preferences.browser_collapsed = a;
+        app.preferences.timeline_left_browser_collapsed = b;
+    }
     app.drawing_ws.open = open;
     app.drawing_ws.key = None;
     app.drawing_ws.preview = None;
@@ -127,7 +145,13 @@ pub fn params(app: &SolveApp) -> Value {
     let up = if matches!(app.cam.up, solidcraft_engine::render::UpAxis::Y) { "y" } else { "z" };
     let (_, w, h) = SHEETS.get(st.sheet).copied().unwrap_or(SHEETS[1]);
     let scale = st.scale.map_or(json!("auto"), |k| json!(k));
-    json!({"rows": st.rows, "cols": st.cols, "views": views, "title": st.title, "up": up, "scale": scale, "sheet": [w, h]})
+    let mut p = json!({"rows": st.rows, "cols": st.cols, "views": views, "title": st.title, "up": up, "scale": scale, "sheet": [w, h]});
+    if st.cells.iter().take(st.rows * st.cols).any(|c| VIEWS.get(c.view).is_some_and(|v| v.0 == "current")) {
+        let mut cam = app.cam;
+        cam.fov = app.view_fov();
+        p["camera"] = json!(cam);
+    }
+    p
 }
 
 fn refresh(app: &mut SolveApp) {
@@ -320,14 +344,15 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 let Some(mut cell) = app.drawing_ws.cells.get(i).copied() else { continue };
                 ui.horizontal(|ui| {
                     ui.label(format!("{}·{}", i / cols + 1, i % cols + 1));
-                    egui::ComboBox::from_id_salt(("drawing_view", i)).width(80.0).selected_text(VIEWS.get(cell.view).map_or("", |v| v.1)).show_ui(
-                        ui,
-                        |ui| {
+                    egui::ComboBox::from_id_salt(("drawing_view", i))
+                        .width(80.0)
+                        .height(360.0)
+                        .selected_text(VIEWS.get(cell.view).map_or("", |v| v.1))
+                        .show_ui(ui, |ui| {
                             for (k, (_, label)) in VIEWS.iter().enumerate() {
                                 ui.selectable_value(&mut cell.view, k, *label);
                             }
-                        },
-                    );
+                        });
                     egui::ComboBox::from_id_salt(("drawing_style", i))
                         .width(96.0)
                         .selected_text(if cell.hidden_line { "Hidden line" } else { "Wireframe" })

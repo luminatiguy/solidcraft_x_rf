@@ -60,9 +60,9 @@ CommandSpec::new("view.spin", "Continuous orbit", spin)
 CommandSpec::new("view.visual_style", "Visual style", visual_style)
     .icon("style").noundo().doc_only().params("style: shaded_with_edges|shaded|wireframe|shaded_with_hidden_edges|hidden_line → style, index (0..4 in that order); hidden_line: the edges only, those behind faces hidden"),
 CommandSpec::new("view.grid", "Grid", grid)
-    .icon("style").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; show the viewport grid"),
+    .icon("grid").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; show the viewport grid"),
 CommandSpec::new("view.ground_shadow", "Ground shadow", ground_shadow)
-    .icon("style").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; show the ground shadow"),
+    .icon("ground_shadow").noundo().doc_only().params("on?: bool (omitted: toggle) → on?; show the ground shadow"),
 CommandSpec::new("view.navigation_bar", "Navigation bar", navigation_bar)
     .icon("pan").noundo().doc_only().params("visible?: bool (omitted: toggle) → visible?; show the navigation bar (window setting)"),
 CommandSpec::new("view.navigator", "Custom View Navigator", crate::checked!("view.navigator", navigator))
@@ -107,7 +107,7 @@ CommandSpec::new("view.history_layout", "History layout", history_layout)
 CommandSpec::new("view.graphics_preset", "Graphics Preset", graphics_preset)
     .icon("settings").noundo().doc_only().params("preset: performance|quality → preset, enabled, display_quality, supersampling, supersampling_adaptive; Quality: AO, Fine, adaptive 2x SSAA; Performance: no AO, Normal, no SSAA"),
 CommandSpec::new("view.ambient_occlusion", "Ambient Occlusion", ambient_occlusion)
-    .icon("settings").noundo().doc_only().params("enabled: bool → enabled; apply soft contact shading in the GPU viewport"),
+    .icon("ambient_occlusion").noundo().doc_only().params("enabled: bool → enabled; apply soft contact shading in the GPU viewport"),
 CommandSpec::new("view.perspective", "Perspective view", perspective)
     .icon("perspective").noundo().doc_only().params("enabled: bool → enabled; draw the view in perspective, or orthographic when false; a sketch being edited is always shown orthographic"),
 CommandSpec::new("view.angle_readout", "View Angles", crate::checked!("view.angle_readout", angle_readout))

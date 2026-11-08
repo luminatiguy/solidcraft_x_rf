@@ -610,6 +610,7 @@ fn scene_key(app: &SolveApp) -> u64 {
     app.preview.effective_replaced().hash(&mut h);
     app.preview.rolled_back.hash(&mut h);
     app.preferences.cosmetic_threads.hash(&mut h);
+    crate::hatch_tool::preview_key(app).hash(&mut h);
     app.preferences.section_hatch.hash(&mut h);
     crate::theme::is_dark().hash(&mut h);
     crate::theme::vision().hash(&mut h);
@@ -1542,8 +1543,11 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     let shown: Vec<&solidcraft_engine::doc::ModelBody> =
         st.bodies.iter().filter(|b| app.body_visible(&b.name) && !app.preview.effective_replaced().contains(&b.name)).collect();
     let mut arena = app.viewport.palette.lock().unwrap_or_else(|e| e.into_inner());
+    // The Hatch Pattern tool's preview has a colour slot of its own, kept like a body's.
+    const HATCH_PREVIEW: &str = "\u{1}hatch preview";
     let shown_names: Vec<&str> = shown.iter().map(|b| b.name.as_str()).collect();
     arena.sync(shown_names.iter().copied());
+    let preview_slot = arena.body(HATCH_PREVIEW, 0).edge;
     // Allocate every body's slots before the scene's palette is copied, so the stable prefix
     // covers them; the colours themselves are written in the loop below, into both the arena
     // and the scene's palette.
@@ -1571,6 +1575,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     // the CPU.
     let mut instances = Instances::new(app, &shown, shaded);
     let mut thread_budget = solidcraft_engine::cosmetic_threads::Budget::default();
+    let hatches = solidcraft_engine::hatch::hatches(&s.doc.metadata);
     for (b, slots) in shown.into_iter().zip(slots) {
         let faded = body_faded(app, b, &active_bodies) || halftone;
         let identity = match appearance.keys.get(&b.name).copied() {
@@ -1606,6 +1611,29 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
             let mesh = shown_mesh(app, b, &active_bodies);
             for (a, c) in solidcraft_engine::cosmetic_threads::segments_with_budget(b, &mesh, &st.threads, &mut thread_budget) {
                 sc.line(a.to_f32(), c.to_f32(), slots.edge, 0.85, false);
+            }
+        }
+        // Hatch patterns on faces (`hatch_tool.rs`): depth-tested lines on the face, in the edge
+        // colour; Wireframe shows none.
+        if shaded && !faded && !hatches.is_empty() && hatches.iter().any(|h| h.body == b.name) {
+            let mesh = shown_mesh(app, b, &active_bodies);
+            let size = mesh.positions.iter().fold(0.0f64, |m, p| m.max(p.x.abs().max(p.y.abs()).max(p.z.abs())));
+            let lift = (size * 2e-4).max(1e-4);
+            for h in hatches.iter().filter(|h| h.body == b.name) {
+                for (a, c) in solidcraft_engine::hatch::segments(&mesh, h, lift) {
+                    sc.line(a.to_f32(), c.to_f32(), slots.edge, 0.7, false);
+                }
+            }
+        }
+        // The Hatch Pattern tool's preview on the face under the pointer, in the selection colour.
+        if shaded && let Some(h) = crate::hatch_tool::preview(app).filter(|h| h.body == b.name) {
+            let mesh = shown_mesh(app, b, &active_bodies);
+            let size = mesh.positions.iter().fold(0.0f64, |m, p| m.max(p.x.abs().max(p.y.abs()).max(p.z.abs())));
+            let lift = (size * 3e-4).max(1e-4);
+            let slot = preview_slot;
+            set_palette_color(&mut arena, &mut sc.palette, slot, c4(tk.sel_edge));
+            for (a, c) in solidcraft_engine::hatch::segments(&mesh, &h, lift).into_iter().take(200_000) {
+                sc.line(a.to_f32(), c.to_f32(), slot, 1.1, false);
             }
         }
         let base = if hidden_line { paper } else { resolved.component.or(resolved.body).unwrap_or(tk.body) };
@@ -4741,6 +4769,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         tool_hover(app, &hits).map(|h| (h, None))
     } else if let Some((hit, sel)) = corner {
         Some((hit, Some(sel)))
+    } else if crate::hatch_tool::active(app) {
+        // The tool previews its pattern on the face under the pointer instead of lighting it.
+        crate::hatch_tool::set_hover(app, &hits);
+        None
     } else if crate::forms::picking_plane(app) {
         // Set Work Plane: the plane or flat face under the pointer lights up on its own.
         crate::forms::plane_candidate(app, &hits).map(|(h, s)| (h, Some(s)))
@@ -5478,6 +5510,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::forms::paint_open_ends(app, &painter, &proj);
     crate::cad::paint_selected(app, &painter, &proj);
     crate::reference_planes::paint(app, &painter, &proj);
+    crate::reference_planes::paint_outlines(app, &painter, &proj);
     crate::reference_planes::paint_work_plane_edges(app, &painter, &proj);
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);

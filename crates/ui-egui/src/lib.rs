@@ -75,6 +75,7 @@ pub mod frame;
 pub mod frame_rate;
 pub mod gizmo;
 pub mod gpu;
+mod hatch_tool;
 pub mod help;
 pub(crate) mod history_rows;
 #[cfg(test)]
@@ -117,6 +118,7 @@ mod material_card_review;
 mod material_editor;
 mod reference_planes;
 mod silhouette;
+mod view_graphics;
 
 #[cfg(test)]
 mod measurement_ui_tests;
@@ -630,6 +632,7 @@ pub struct SolveApp {
     pub start_after_roll: Option<(String, u64)>,
     /// The MODEL tab's form tools: the work plane and the form being sketched (`forms.rs`).
     pub(crate) forms: forms::State,
+    pub(crate) hatch: hatch_tool::State,
     /// The sketch tools after CADCraft's: the one running and the snap switches (`cad`).
     pub(crate) cad: cad::State,
     pub(crate) drawing_ws: drawing_ws::State,
@@ -878,6 +881,7 @@ impl SolveApp {
             deferred_queue: Vec::new(),
             start_after_roll: None,
             forms: forms::State::default(),
+            hatch: hatch_tool::State::default(),
             cad: cad::State::default(),
             drawing_ws: drawing_ws::State::default(),
             shell_ui: appshell::State::default(),
@@ -1647,7 +1651,12 @@ impl SolveApp {
             return;
         }
         // The MODEL tab's form tools, the work plane and Model Line (`forms.rs`).
-        if forms::start_hook(self, id) || cad::start_hook(self, id) || objects::start_hook(self, id) {
+        if forms::start_hook(self, id)
+            || hatch_tool::start_hook(self, id)
+            || view_graphics::start_hook(self, id)
+            || cad::start_hook(self, id)
+            || objects::start_hook(self, id)
+        {
             return;
         }
         if id != "occurrence.move" {
@@ -2984,6 +2993,7 @@ impl SolveApp {
         self.follow_view_request(true);
         self.return_from_extrude_view();
         forms::tick(self, ctx);
+        hatch_tool::tick(self, ctx);
         agent_cursor::step(self, ctx);
         browser::eye_drag_frame(self, ctx);
         if !self.synthetic.is_empty() {
