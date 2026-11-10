@@ -1570,6 +1570,10 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
         app.shell.cards = vec![ws, Rect::from_min_max(pos2(ribbon_left, r.top()), r.max)];
+        // The design tabs' card is a card too: the docks start below it.
+        if floating && !crate::render_workspace::active(app) {
+            app.shell.cards.push(tabs_card(&cards));
+        }
         if crate::render_workspace::active(app) {
             ui.set_clip_rect(ui.clip_rect().intersect(r));
         }

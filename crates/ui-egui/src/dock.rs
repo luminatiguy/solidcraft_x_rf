@@ -26,7 +26,37 @@ pub fn right_column_used(app: &SolveApp) -> bool {
     if !app.preferences.panels_limit_view || crate::render_workspace::active(app) || crate::drawing_ws::active(app) {
         return false;
     }
-    (app.shell_ui.properties && app.preferences.properties_docked) || app.session.active_sketch.is_some()
+    (app.shell_ui.properties && app.preferences.properties_docked && !app.preferences.properties_left) || app.session.active_sketch.is_some()
+}
+
+/// Properties docked at the left, below the Browser.
+pub fn properties_left(app: &SolveApp) -> bool {
+    app.preferences.panels_limit_view
+        && app.preferences.properties_docked
+        && app.preferences.properties_left
+        && app.shell_ui.properties
+        && !crate::render_workspace::active(app)
+        && !crate::drawing_ws::active(app)
+}
+
+/// The lowest edge of the ribbon's and the design tabs' cards.
+fn cards_bottom(app: &SolveApp, full: Rect) -> f32 {
+    app.shell.cards.iter().map(|c| c.bottom()).fold(full.top(), f32::max)
+}
+
+/// Properties' place at the left: the Browser's width, from below the Browser (or the cards)
+/// down to the bottom History or status bar.
+pub fn left_properties(app: &SolveApp, full: Rect) -> Option<Rect> {
+    if !properties_left(app) {
+        return None;
+    }
+    let column = right_column(app, full);
+    let left = full.left() + gap();
+    let browser = app.shell.browser.filter(|b| app.ui.show_browser && !app.shell.browser_hidden && b.is_positive());
+    let width = browser.map_or(column_width(app), |b| b.width()).clamp(MIN_WIDTH, MAX_WIDTH);
+    let top = browser.map_or(column.top(), |b| b.bottom() + gap());
+    let top = top.min(column.bottom() - 120.0).max(column.top());
+    Some(Rect::from_min_max(pos2(left, top), pos2(left + width, column.bottom())))
 }
 
 /// The right column's width.
@@ -38,13 +68,10 @@ pub fn column_width(app: &SolveApp) -> f32 {
 /// The right column within `full` (the area below the ribbon): its full height between the
 /// ribbon's cards and the bottom History or status bar.
 pub fn right_column(app: &SolveApp, full: Rect) -> Rect {
-    let mut top = full.top();
-    for card in &app.shell.cards {
-        top = top.max(card.bottom());
-    }
+    let top = cards_bottom(app, full);
     let mut bottom = full.bottom();
     if app.ui.show_timeline
-        && !app.preferences.timeline_left
+        && !(app.preferences.timeline_left && !properties_left(app))
         && let Some(h) = app.shell.history
     {
         bottom = bottom.min(h.top());
@@ -64,6 +91,14 @@ pub fn model_rect(app: &SolveApp, full: Rect) -> Rect {
     }
     let mut r = full;
     let g = gap();
+    // Below the ribbon and the design tabs: the docks and the model start under them.
+    let below = cards_bottom(app, full);
+    if below > r.min.y && below < full.bottom() - 150.0 {
+        r.min.y = below + g * 0.5;
+    }
+    if let Some(p) = left_properties(app, full) {
+        r.min.x = r.min.x.max(p.right() + g * 0.5);
+    }
     if app.ui.show_browser
         && !app.shell.browser_hidden
         && let Some(b) = app.shell.browser
@@ -73,7 +108,7 @@ pub fn model_rect(app: &SolveApp, full: Rect) -> Rect {
         r.min.x = r.min.x.max(b.right() + g * 0.5);
     }
     if let Some(h) = app.shell.history.filter(|h| h.is_positive() && app.ui.show_timeline) {
-        if app.preferences.timeline_left {
+        if app.preferences.timeline_left && !properties_left(app) {
             if h.width() < full.width() * 0.6 {
                 r.min.x = r.min.x.max(h.right() + g * 0.5);
             }
@@ -115,6 +150,57 @@ pub fn width_handle(app: &mut SolveApp, ctx: &egui::Context, column: Rect) {
     if r.double_clicked() {
         app.preferences.right_column_width = 300.0;
     }
+}
+
+/// The small buttons in a docked panel's header, drawn (no font glyphs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeaderIcon {
+    Close,
+    /// Undock: a window lifted off another.
+    Float,
+    /// Dock at the left: a frame with its left strip filled.
+    DockLeft,
+    /// Dock at the right: a frame with its right strip filled.
+    DockRight,
+}
+
+/// A header button with a drawn icon, 20×20 points.
+pub fn icon_button(ui: &mut egui::Ui, icon: HeaderIcon, tip: &str) -> egui::Response {
+    let t = Tokens::get();
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+    let r = r.on_hover_text(tip);
+    let p = ui.painter();
+    if r.hovered() {
+        p.rect_filled(rect, f32::from(t.radius_sm), t.accent_soft);
+    }
+    let ink = if r.hovered() { t.text } else { t.text_dim };
+    let stroke = egui::Stroke::new(1.3, ink);
+    let c = rect.center();
+    let box_ = Rect::from_center_size(c, egui::vec2(11.0, 9.0));
+    match icon {
+        HeaderIcon::Close => {
+            let d = 4.0;
+            p.line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], stroke);
+            p.line_segment([pos2(c.x - d, c.y + d), pos2(c.x + d, c.y - d)], stroke);
+        }
+        HeaderIcon::Float => {
+            let back = Rect::from_min_size(pos2(c.x - 3.0, c.y - 6.0), egui::vec2(9.0, 7.0));
+            let front = Rect::from_min_size(pos2(c.x - 6.0, c.y - 2.0), egui::vec2(9.0, 7.0));
+            p.rect_stroke(back, 1.0, stroke, egui::StrokeKind::Middle);
+            p.rect_filled(front, 1.0, if r.hovered() { t.accent_soft } else { t.panel });
+            p.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Middle);
+        }
+        HeaderIcon::DockLeft | HeaderIcon::DockRight => {
+            p.rect_stroke(box_, 1.0, stroke, egui::StrokeKind::Middle);
+            let strip = if icon == HeaderIcon::DockLeft {
+                Rect::from_min_max(box_.min, pos2(box_.left() + 4.0, box_.bottom()))
+            } else {
+                Rect::from_min_max(pos2(box_.right() - 4.0, box_.top()), box_.max)
+            };
+            p.rect_filled(strip, 0.0, ink);
+        }
+    }
+    r
 }
 
 /// A drag handle along the vertical line `x` from `top` to `bottom`: how far it was dragged

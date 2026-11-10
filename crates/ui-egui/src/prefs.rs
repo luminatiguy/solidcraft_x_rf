@@ -1383,6 +1383,8 @@ preference_settings! {
     properties_docked: bool = true, PAGE_LAYOUT;
     /// The right column's width (Properties, the sketch's panel).
     right_column_width: f32 = 300.0, PAGE_LAYOUT;
+    /// Properties docks at the left, below the Browser (the History goes to the bottom).
+    properties_left: bool = false, PAGE_LAYOUT;
     /// The Drawing workspace's settings panel width (dragged at its edge).
     drawing_panel_width: f32 = 280.0, PAGE_LAYOUT;
     /// Render shell preference, independent of the document and Design history.

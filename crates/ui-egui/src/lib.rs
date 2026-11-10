@@ -3193,7 +3193,8 @@ impl SolveApp {
         render_ui::focus_shortcut(self, ui);
         let show_timeline =
             self.ui.show_timeline && !render_workspace::active(self) && !drawing_ws::active(self) && !self.preferences.history_in_browser;
-        let left_timeline = show_timeline && self.preferences.timeline_left;
+        // Properties docked below the Browser sends the History to the bottom.
+        let left_timeline = show_timeline && self.preferences.timeline_left && !dock::properties_left(self);
         timeline_left::animate_folds(self, ui.ctx());
         if !floating && !self.embedded {
             toolbar::toolbar(self, ui);
@@ -3248,6 +3249,10 @@ impl SolveApp {
                 !continuing_navigation && !continuing_comparison && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| shell::covered(self, p));
             // Docked panels limit the model's space (`dock`): the scene is drawn between them.
             let model = dock::model_rect(self, full);
+            if model != full {
+                // The room between the docks takes the view's own colour, light or dark.
+                ui.painter().rect_filled(full, 0.0, theme::Tokens::get().viewport_bottom);
+            }
             let mut viewport_ui = ui.new_child(egui::UiBuilder::new().max_rect(model).id_salt("floating_viewport"));
             if blocked {
                 // Disabled only to shield the scene from input under a card or menu; it must
@@ -3299,6 +3304,9 @@ impl SolveApp {
                 } else {
                     preview::update(self, ui.ctx());
                     let model = dock::model_rect(self, ui.max_rect());
+                    if model != ui.max_rect() {
+                        ui.painter().rect_filled(ui.max_rect(), 0.0, theme::Tokens::get().viewport_bottom);
+                    }
                     let mut model_ui = ui.new_child(egui::UiBuilder::new().max_rect(model).id_salt("docked_viewport"));
                     self.show_workspace(&mut model_ui);
                 }

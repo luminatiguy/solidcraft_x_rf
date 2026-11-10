@@ -628,6 +628,7 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     let mut blend_apply: Option<(u64, usize, String)> = None;
     let docked = app.preferences.properties_docked && app.preferences.panels_limit_view;
     let mut toggle_dock = false;
+    let mut side: Option<bool> = None;
     let mut body = |app: &mut SolveApp, ui: &mut egui::Ui| {
         // A form being drawn shows its values; a selection in the open sketch, its curves.
         if crate::browser::hatches::properties_ui(app, ui)
@@ -720,13 +721,15 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
         // Docked in the right column, below the sketch's panel while a sketch is open.
         let full = ctx.content_rect();
         let column = crate::dock::right_column(app, full);
+        let left = crate::dock::left_properties(app, full);
         let mut top = column.top();
-        if app.session.active_sketch.is_some()
+        if left.is_none()
+            && app.session.active_sketch.is_some()
             && let Some(p) = app.viewport.palette_rect
         {
             top = (p.bottom() + crate::shell::SHELL_GAP).min(column.bottom() - 120.0).max(column.top());
         }
-        let rect = Rect::from_min_max(pos2(column.left(), top), column.max);
+        let rect = left.unwrap_or_else(|| Rect::from_min_max(pos2(column.left(), top), column.max));
         let t = Tokens::get();
         let host = Container::new(ctx, Surface::Panel);
         let frame = host.frame(ctx, t.panel, crate::frame::Side::Right).inner_margin(8);
@@ -739,11 +742,19 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Properties").strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").on_hover_text("Close").clicked() {
+                        use crate::dock::{HeaderIcon, icon_button};
+                        if icon_button(ui, HeaderIcon::Close, "Close").clicked() {
                             open = false;
                         }
-                        if ui.small_button("⧉").on_hover_text("Float (undock)").clicked() {
+                        if icon_button(ui, HeaderIcon::Float, "Float (undock)").clicked() {
                             toggle_dock = true;
+                        }
+                        if left.is_some() {
+                            if icon_button(ui, HeaderIcon::DockRight, "Dock at the right").clicked() {
+                                side = Some(false);
+                            }
+                        } else if icon_button(ui, HeaderIcon::DockLeft, "Dock at the left, below the Browser").clicked() {
+                            side = Some(true);
                         }
                     });
                 });
@@ -752,7 +763,9 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
             });
         });
         app.shell.properties = Some(shown.response.rect);
-        crate::dock::width_handle(app, ctx, column);
+        if left.is_none() {
+            crate::dock::width_handle(app, ctx, column);
+        }
     } else {
         app.shell.properties = None;
         egui::Window::new("Properties")
@@ -761,15 +774,30 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
             .default_width(280.0)
             .resizable(true)
             .show(ctx, |ui| {
-                if ui.small_button("Dock right").on_hover_text("Dock in the right column").clicked() {
-                    toggle_dock = true;
-                }
+                ui.horizontal(|ui| {
+                    use crate::dock::{HeaderIcon, icon_button};
+                    if icon_button(ui, HeaderIcon::DockLeft, "Dock at the left, below the Browser").clicked() {
+                        side = Some(true);
+                    }
+                    if icon_button(ui, HeaderIcon::DockRight, "Dock at the right").clicked() {
+                        side = Some(false);
+                    }
+                });
                 body(app, ui);
             });
     }
     if toggle_dock {
         app.preferences.properties_docked = !app.preferences.properties_docked;
         app.preferences.panels_limit_view = true;
+    }
+    if let Some(left) = side {
+        app.preferences.properties_docked = true;
+        app.preferences.panels_limit_view = true;
+        app.preferences.properties_left = left;
+        // Below the Browser, Properties takes the left: the History goes to the bottom.
+        if left {
+            app.preferences.timeline_left = false;
+        }
     }
     if !open {
         app.shell_ui.properties = false;
