@@ -77,6 +77,7 @@ pub mod gizmo;
 pub mod gpu;
 mod hatch_tool;
 pub mod help;
+mod history_commands;
 pub(crate) mod history_rows;
 #[cfg(test)]
 mod hole_direction_ui_tests;
@@ -285,6 +286,7 @@ mod sketch_modify_ui_tests;
 mod sketch_moving_click_tests;
 pub mod sketch_palette;
 mod sketch_pattern_tree;
+mod sketch_props;
 pub mod sketch_report;
 #[cfg(test)]
 mod sketch_side_ui_tests;
@@ -2404,7 +2406,7 @@ impl SolveApp {
         self.leave_sketch("sketch.cancel");
     }
 
-    fn leave_sketch(&mut self, command: &str) {
+    pub(crate) fn leave_sketch(&mut self, command: &str) {
         self.prepare_sketch_exit();
         if self.session.sketch_restore_marker().is_some() {
             // Finishing now restores the marker in the engine: evaluate the complete

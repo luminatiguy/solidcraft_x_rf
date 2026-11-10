@@ -32,8 +32,8 @@ pub fn make(id: &str) -> Option<Box<dyn Machine>> {
         "cad.join" => Box::new(SelectThen::new(Join)),
         "cad.arrayrect" => Box::new(SelectThen::new(ArrayRect)),
         "cad.arraypolar" => Box::new(SelectThen::new(ArrayPolar)),
-        "cad.trim" => Box::new(TrimM { extend: false }),
-        "cad.extend" => Box::new(TrimM { extend: true }),
+        "cad.trim" => Box::new(TrimM::new(false)),
+        "cad.extend" => Box::new(TrimM::new(true)),
         "cad.fillet" => Box::new(FilletM::default()),
         "cad.chamfer" => Box::new(ChamferM::default()),
         "cad.offset" => Box::new(OffsetM::default()),
@@ -430,32 +430,125 @@ fn join(app: &mut SolveApp, objs: &[String]) -> Res {
 
 // ---- TRIM / EXTEND --------------------------------------------------------------------------
 
+#[derive(Default)]
 struct TrimM {
     extend: bool,
+    /// The fence's first point: a click on empty space (or the Fence option) starts a line, and
+    /// every curve it crosses is trimmed (extended) where it crosses.
+    fence: Option<Vec2>,
+    /// Fence typed: the next point starts the fence even over a curve.
+    fence_next: bool,
+}
+
+/// Where the fence from `a` to `b` crosses the open sketch's curves: (curve, point), in order
+/// along the fence.
+fn fence_crossings(app: &SolveApp, a: Vec2, b: Vec2) -> Vec<(String, Vec2)> {
+    let fence = Shape::Line(a, b);
+    let mut out: Vec<(f64, String, Vec2)> = Vec::new();
+    for e in ents(app).into_iter().take(10_000) {
+        for x in geo::crossings(&fence, &e.shape) {
+            out.push((x.dist(a), e.id.clone(), x));
+        }
+    }
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    out.into_iter().map(|(_, id, p)| (id, p)).collect()
+}
+
+impl TrimM {
+    fn new(extend: bool) -> TrimM {
+        TrimM { extend, ..Default::default() }
+    }
+
+    /// Trim (extend) every curve the fence crosses, at the crossing.
+    fn run_fence(&self, app: &mut SolveApp, a: Vec2, b: Vec2) -> Result<usize, String> {
+        let cmd = if self.extend { "sketch.extend" } else { "sketch.trim" };
+        let crossings = fence_crossings(app, a, b);
+        if crossings.is_empty() {
+            return Err("The fence crosses no object".into());
+        }
+        let mut done = 0;
+        for (id, at) in crossings.into_iter().take(500) {
+            // The curve under the crossing now: an earlier trim may have split or removed it.
+            let now = ents(app);
+            let tol = 1e-6_f64.max(at.len() * 1e-9);
+            let under = now.iter().find(|e| e.id == id && e.shape.dist(at) < 1e-4).or_else(|| now.iter().find(|e| e.shape.dist(at) < tol));
+            let Some(e) = under else { continue };
+            let curve = e.id.clone();
+            if run(app, cmd, json!({"curve": curve, "at": xy(at)})).is_ok() {
+                done += 1;
+            }
+        }
+        if done == 0 {
+            return Err(if self.extend { "Nothing to extend along the fence".into() } else { "Nothing to trim along the fence".into() });
+        }
+        Ok(done)
+    }
 }
 
 impl Machine for TrimM {
     fn prompt(&self, _: &SolveApp) -> Prompt {
-        Prompt::new(if self.extend { "Select object to extend (near the end)" } else { "Select object to trim" }, Accept::PICK)
+        if let Some(a) = self.fence {
+            return Prompt::new("Specify next fence point", Accept::POINT).base(Some(a));
+        }
+        if self.fence_next {
+            return Prompt::new("Specify first fence point", Accept::POINT);
+        }
+        let what = if self.extend { "Select object to extend (near the end)" } else { "Select object to trim" };
+        Prompt::new(format!("{what}, or click empty space for a fence"), Accept::PICK).kw(&["Fence"])
     }
     fn input(&mut self, app: &mut SolveApp, i: Input) -> Res {
-        match i {
-            Input::Point { p, curve: Some(c) } => {
+        match (self.fence, i) {
+            (Some(a), Input::Point { p, .. }) => {
+                self.fence = None;
+                self.fence_next = false;
+                if p.dist(a) < 1e-9 {
+                    return Err("pick a second fence point away from the first".into());
+                }
+                let n = self.run_fence(app, a, p)?;
+                app.set_status(format!("{n} object{} {}", if n == 1 { "" } else { "s" }, if self.extend { "extended" } else { "trimmed" }), false);
+                Ok(Step::Continue)
+            }
+            (Some(_), Input::Enter) => {
+                self.fence = None;
+                self.fence_next = false;
+                Ok(Step::Continue)
+            }
+            (None, Input::Keyword("Fence")) => {
+                self.fence_next = true;
+                Ok(Step::Continue)
+            }
+            (None, Input::Point { p, curve: Some(c) }) if !self.fence_next => {
                 let cmd = if self.extend { "sketch.extend" } else { "sketch.trim" };
                 run(app, cmd, json!({"curve": c, "at": xy(p)}))?;
                 Ok(Step::Continue)
             }
-            Input::Point { .. } => Err("No object there".into()),
-            Input::Enter => Ok(Step::Done),
+            // Empty space (or Fence typed): the fence starts here.
+            (None, Input::Point { p, .. }) => {
+                self.fence = Some(p);
+                Ok(Step::Continue)
+            }
+            (None, Input::Enter) => Ok(Step::Done),
             _ => Err(bad_input()),
         }
     }
-    fn preview(&self, app: &SolveApp, _: Vec2) -> Vec<Prev> {
+    fn preview(&self, app: &SolveApp, cursor: Vec2) -> Vec<Prev> {
+        if let Some(a) = self.fence {
+            let mut out = vec![Prev::Line(vec![a, cursor])];
+            // Where the fence will cut: a small cross at each crossing.
+            for (_, x) in fence_crossings(app, a, cursor).into_iter().take(200) {
+                let d = (cursor - a).len().max(1e-9) * 0.015;
+                out.push(Prev::Line(vec![x + Vec2::new(-d, -d), x + Vec2::new(d, d)]));
+                out.push(Prev::Line(vec![x + Vec2::new(-d, d), x + Vec2::new(d, -d)]));
+            }
+            return out;
+        }
         let (Some(sid), Some(c)) = (app.session.active_sketch, app.cad.hover_curve.as_ref()) else { return Vec::new() };
         if self.extend {
             return Vec::new();
         }
-        crate::sketch_tools::trim_hover_piece(app, sid, c).map(|p| vec![Prev::Line(p)]).unwrap_or_default()
+        let Some(at) = app.cad.raw else { return Vec::new() };
+        let st = crate::open_meshing::session_world(&app.session);
+        st.sketch(sid).and_then(|ss| solidcraft_engine::cmd::trim_piece(&ss.sketch, c, at)).map(|p| vec![Prev::Line(p)]).unwrap_or_default()
     }
 }
 

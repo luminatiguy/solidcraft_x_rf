@@ -1361,6 +1361,13 @@ preference_settings! {
     /// A Play History button in the History controls, between Previous and Next (#3688). Off
     /// gives the four controls History had before; right-clicking the controls toggles it too.
     history_play_button: bool = true, PAGE_LAYOUT;
+    /// History lists the commands the session ran, not the construction sequence: no rollback
+    /// marker, no playback, nothing to conflict when a body is edited again. Off gives the
+    /// feature timeline History had before.
+    history_commands: bool = true, PAGE_LAYOUT;
+    /// The browser's Features folder lists every step that built the model, as before. Off (the
+    /// default): only Model Line sketches and reference planes; a body's steps are edited from it.
+    browser_features_all: bool = false, PAGE_LAYOUT;
     /// The vertical history (left, or under the browser) starts with the active component's Bodies
     /// folder and the Origin, as the browser shows them (#6490). The bottom strip is unchanged.
     timeline_origin_bodies: bool = false, PAGE_LAYOUT;
@@ -1621,6 +1628,10 @@ preference_settings! {
     /// release and end there (#7247); clicks still draw a chain. Off (the default): a drag is a
     /// click that moved on the way, placing a point where it is let go (#2448).
     line_drag_draws_one: bool = false, PAGE_SKETCH;
+    /// Grips as CADCraft has them: a sketch point or curve drags only when it (or a curve through
+    /// the point) is selected, and a grip stretches its own point without carrying the rest of
+    /// the selection. Off: any point or curve of the open sketch drags, as before.
+    sketch_grips_selected_only: bool = true, PAGE_SKETCH;
     /// In the Line tool, leaving the chain's last point and resting back on it switches to a
     /// tangent arc, and the same again back to lines (#9489). Off (the default): resting there
     /// does nothing, and tangent arcs are the Arc tool's.

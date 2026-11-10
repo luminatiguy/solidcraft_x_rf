@@ -58,7 +58,7 @@ pub struct State {
     /// The pass a popup was opened on (its own click doesn't close it).
     opened: u64,
     /// Properties: the field being typed into (feature, input index) and its text.
-    editing: Option<(u64, usize, String)>,
+    pub(crate) editing: Option<(u64, usize, String)>,
 }
 
 fn quick_label(id: &str) -> &'static str {
@@ -614,7 +614,13 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    let found = selected_feature(app);
+    // The selected object, else the one whose sketch is open for editing.
+    let found = selected_feature(app).or_else(|| {
+        let (_, feature, _) = app.forms.after_edit?;
+        let st = crate::open_meshing::session_world(&app.session);
+        st.bodies.iter().find(|b| b.feature == feature).map(|b| (b.name.clone(), feature))
+    });
+    let mut open_sketch: Option<(String, u64)> = None;
     let info = found.as_ref().and_then(|(_, f)| app.session.execute("timeline.inspect", &json!({"feature": f})).ok());
     let mut apply: Option<(u64, usize, String)> = None;
     let mut edit_sketch: Option<String> = None;
@@ -626,6 +632,10 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
         .default_width(280.0)
         .resizable(true)
         .show(ctx, |ui| {
+            // A form being drawn shows its values; a selection in the open sketch, its curves.
+            if crate::sketch_props::ui(app, ui) || crate::forms::properties_ui(app, ui) {
+                return;
+            }
             let Some((body, feature)) = &found else {
                 ui.label(egui::RichText::new("Select an object to see its properties.").color(Tokens::get().text_dim));
                 return;
@@ -686,14 +696,23 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
                 }
             });
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("Edit sketch").clicked() {
-                    edit_sketch = Some(body.clone());
-                }
-                if ui.button("Edit feature…").clicked() {
-                    edit_feature = Some(*feature);
-                }
-            });
+            let sketches = object_sketches(app, *feature);
+            if !sketches.is_empty() {
+                ui.label("Sketches");
+                ui.horizontal_wrapped(|ui| {
+                    for (label, sketch) in &sketches {
+                        let current = app.session.active_sketch == Some(*sketch);
+                        let r = ui.add_enabled(!current, egui::Button::new(label.as_str()).selected(current));
+                        crate::scenario::publish_target(&format!("props:sketch:{label}"), r.rect);
+                        if r.clicked() {
+                            open_sketch = Some((body.clone(), *sketch));
+                        }
+                    }
+                });
+            } else if ui.button("Edit…").clicked() {
+                edit_feature = Some(*feature);
+            }
+            let _ = &mut edit_sketch;
             ui.label(egui::RichText::new("Type a value and press Enter to apply it.").small().color(Tokens::get().text_dim));
         });
     if !open {
@@ -714,8 +733,37 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(body) = edit_sketch {
         crate::objects::edit_object(app, &body);
     }
+    if let Some((body, sketch)) = open_sketch {
+        crate::objects::edit_object_sketch(app, &body, Some(sketch));
+    }
     if let Some(f) = edit_feature {
         app.edit_feature(f);
+    }
+}
+
+/// The sketches an object was made from, each with what it is for.
+fn object_sketches(app: &SolveApp, feature: u64) -> Vec<(String, u64)> {
+    use solidcraft_engine::doc::FeatureKind;
+    let Some(f) = app.session.doc.feature(feature) else { return Vec::new() };
+    match &f.kind {
+        FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } => vec![("Sketch".into(), sketch.0)],
+        FeatureKind::Loft { sections, .. } => {
+            let n = sections.len();
+            sections
+                .iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    let label = match (n, i) {
+                        (2, 0) => "Base".to_string(),
+                        (2, _) => "Top".to_string(),
+                        _ => format!("Section {}", i + 1),
+                    };
+                    (label, x.sketch.0)
+                })
+                .collect()
+        }
+        FeatureKind::Sweep { sketch, path_sketch, .. } => vec![("Path".into(), path_sketch.0), ("Profile".into(), sketch.0)],
+        _ => Vec::new(),
     }
 }
 

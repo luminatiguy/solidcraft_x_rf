@@ -1665,7 +1665,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
         }
         let closed = b.is_closed();
         let class = plan_class(app, &face_classes);
-        let planned = class.and_then(|class| drawn_plan(app, b, true).map(|plan| (plan, class)));
+        let planned = class.and_then(|class| Some((drawn_plan(app, b, true)?, class)));
         let on_gpu = planned.is_some();
         if let Some((plan, class)) = planned {
             sc.planned.push(crate::gpu::PlannedBody { plan, face_colors: face_colors.clone(), class, closed });
@@ -5254,12 +5254,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             // the text, also from the space between its letters (#8835).
             let own = matches!(&hit, Some(Hit::SketchPoint { sketch, .. } | Hit::SketchMidpoint { sketch, .. } | Hit::SketchCurve { sketch, .. }) if Some(*sketch) == active);
             let hit = if own { hit } else { crate::sketch_text_handles::grab_inside(app, &proj, a).or(hit) };
-            let hit = hit.map(|hit| point_at_midpoint(app, hit));
+            let hit = hit.map(|hit| point_at_midpoint(app, hit)).filter(|hit| grip_allowed(app, hit));
             match hit {
                 Some(Hit::SketchPoint { sketch, id, .. }) if Some(sketch) == active => {
                     // A point dragged with the rest of a selection slides with it, from where it
                     // was grabbed, rather than going to the cursor.
-                    let grab = if dragged_with(app, &id).is_empty() { None } else { on_plane(app, a) };
+                    let grab = if dragged_with(app, &id).is_empty() || app.preferences.sketch_grips_selected_only { None } else { on_plane(app, a) };
                     app.viewport.point_drag = Some((id, app.session.undo.len(), grab))
                 }
                 Some(Hit::SketchCurve { sketch, id, .. } | Hit::SketchMidpoint { sketch, id, .. }) if Some(sketch) == active => {
@@ -5295,7 +5295,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             && let Some(mut q) = hover.and_then(|p| on_plane(app, p))
         {
             let from = grab.unwrap_or(q);
-            let with = dragged_with(app, &id);
+            // A grip stretches its own point only; a selected curve dragged by its body takes the
+            // rest of the selection with it.
+            let with = if grab.is_none() && app.preferences.sketch_grips_selected_only { Vec::new() } else { dragged_with(app, &id) };
             // Snap the dragged point (or the line's ends) to other geometry, like drawing.
             let snap = {
                 let st = crate::open_meshing::shown_world(app);
@@ -6288,6 +6290,38 @@ fn point_at_midpoint(app: &SolveApp, hit: Hit) -> Hit {
         Some((id, at)) => Hit::SketchPoint { sketch: *sketch, id, at },
         None => hit,
     }
+}
+
+/// Grips, as CADCraft has them: with Sketch grips on selected objects only (the default), a
+/// drag moves a point or a curve of the open sketch only when that curve (or a curve through that
+/// point, or the point itself) is selected; elsewhere the drag selects by a window instead.
+fn grip_allowed(app: &SolveApp, hit: &Hit) -> bool {
+    if !app.preferences.sketch_grips_selected_only {
+        return true;
+    }
+    let (Hit::SketchPoint { id, .. } | Hit::SketchCurve { id, .. } | Hit::SketchMidpoint { id, .. }) = hit else { return true };
+    let Some(sid) = app.session.active_sketch else { return true };
+    let selected: Vec<&str> = app
+        .session
+        .selection
+        .iter()
+        .filter_map(|s| match s {
+            Sel::SketchCurve { id, sketch } if sketch.is_none_or(|k| k == sid) => Some(id.as_str()),
+            Sel::SketchPoint { id } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    if selected.contains(&id.as_str()) {
+        return true;
+    }
+    if !matches!(hit, Hit::SketchPoint { .. }) {
+        return false;
+    }
+    let st = crate::open_meshing::session_world(&app.session);
+    let Some(ss) = st.sketch(sid) else { return false };
+    let sk = &ss.sketch;
+    let Some(p) = sk.resolve_point(id) else { return false };
+    sk.curves.iter().any(|c| c.kind.uses(p) && selected.contains(&c.id.as_str()))
 }
 
 fn dragged_with(app: &SolveApp, id: &str) -> Vec<String> {

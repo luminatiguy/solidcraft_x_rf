@@ -14,7 +14,10 @@ fn failing_sample() -> SolveApp {
     let mut s = solidcraft_engine::Session::default();
     s.run_script(&solidcraft_engine::sample::script()).unwrap();
     s.execute("parameters.change", &json!({"name": "width", "expression": "5 mm"})).unwrap();
-    SolveApp::new(s, crate::Services::default())
+    let mut app = SolveApp::new(s, crate::Services::default());
+    // The feature timeline's chips carry the marks (the command-list History has none).
+    app.preferences.history_commands = false;
+    app
 }
 
 /// Each feature's name and whether it failed.

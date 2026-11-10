@@ -1165,14 +1165,17 @@ pub(crate) struct ConsumedSketches {
 fn consumed_sketches(doc: &solidcraft_doc::Document) -> impl Iterator<Item = u64> + '_ {
     use solidcraft_doc::{FeatureKind, SketchPoints};
     sketch_work::add(doc.features.len() as u64);
-    doc.features.iter().filter_map(|f| match &f.kind {
+    doc.features.iter().flat_map(|f| match &f.kind {
         FeatureKind::Extrude { sketch, .. }
         | FeatureKind::Revolve { sketch, .. }
         | FeatureKind::SheetBase { sketch, .. }
         | FeatureKind::SheetContour { sketch, .. }
         | FeatureKind::Hole { points: Some(SketchPoints { sketch, single: false, .. }), .. }
-        | FeatureKind::SheetPerforate { sketch: Some(sketch), .. } => Some(sketch.0),
-        _ => None,
+        | FeatureKind::SheetPerforate { sketch: Some(sketch), .. } => vec![sketch.0],
+        // A Blend's sections and a Sweep's profile and path are the form's, hidden with it.
+        FeatureKind::Loft { sections, .. } => sections.iter().map(|x| x.sketch.0).collect(),
+        FeatureKind::Sweep { sketch, path_sketch, .. } => vec![sketch.0, path_sketch.0],
+        _ => Vec::new(),
     })
 }
 

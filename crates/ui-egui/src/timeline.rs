@@ -939,6 +939,11 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
     let response = ui.interact(drag_rect, egui::Id::new("sc_history_dock_grip"), Sense::drag());
     crate::scenario::publish_handle("history:grip", drag_rect.center());
     crate::timeline_left::dock_drag(app, ui, &response);
+    if app.preferences.history_commands {
+        let strip = Rect::from_min_max(pos2(x + t.space_8, r.top()), r.right_bottom());
+        crate::history_commands::strip(app, ui, strip);
+        return;
+    }
     let controls = crate::ui_kit::HistoryTransport::shown(app.preferences.history_play_button);
     for &control in controls {
         let br = Rect::from_center_size(pos2(x + t.space_24 / 2.0, r.center().y), vec2(t.space_24, t.space_24));

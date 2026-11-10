@@ -26,14 +26,17 @@ pub struct Accept {
     pub point: bool,
     pub number: bool,
     pub select: bool,
+    /// The click picks a curve where it is: the cursor is not snapped (a snap to a circle's
+    /// centre or a crossing told Trim nothing of which piece was meant).
+    pub pick: bool,
 }
 
 impl Accept {
-    pub const POINT: Accept = Accept { point: true, number: false, select: false };
-    pub const POINT_OR_NUMBER: Accept = Accept { point: true, number: true, select: false };
-    pub const NUMBER: Accept = Accept { point: false, number: true, select: false };
-    pub const SELECT: Accept = Accept { point: true, number: false, select: true };
-    pub const PICK: Accept = Accept { point: true, number: false, select: false };
+    pub const POINT: Accept = Accept { point: true, number: false, select: false, pick: false };
+    pub const POINT_OR_NUMBER: Accept = Accept { point: true, number: true, select: false, pick: false };
+    pub const NUMBER: Accept = Accept { point: false, number: true, select: false, pick: false };
+    pub const SELECT: Accept = Accept { point: true, number: false, select: true, pick: false };
+    pub const PICK: Accept = Accept { point: true, number: false, select: false, pick: true };
 }
 
 #[derive(Clone, Debug, Default)]
@@ -44,9 +47,16 @@ pub struct Prompt {
     pub accept: Accept,
     /// Rubber-band origin: typed distances go from it toward the cursor, ortho bends to it.
     pub base: Option<Vec2>,
+    /// The value boxes read the side lengths from the base (Length, Height), not a distance and
+    /// an angle: a rectangle's other corner.
+    pub sides: bool,
 }
 
 impl Prompt {
+    pub fn sides(mut self) -> Prompt {
+        self.sides = true;
+        self
+    }
     pub fn new(message: impl Into<String>, accept: Accept) -> Prompt {
         Prompt { message: message.into(), accept, ..Default::default() }
     }
@@ -89,6 +99,8 @@ pub type Res = Result<Step, String>;
 /// What a tool draws under the cursor, in sketch coordinates.
 pub enum Prev {
     Line(Vec<Vec2>),
+    /// A line in the world (the object tools' base to the cursor, off the work plane too).
+    World(Vec<solidcore_record::Vec3>),
     /// A selection window: left to right (window) or crossing.
     Window(Vec2, Vec2),
 }
@@ -228,6 +240,11 @@ pub struct State {
     track: Option<(Vec2, f64)>,
     /// The running tool works on whole objects on the work plane, outside any sketch.
     pub objects: bool,
+    /// Outside a sketch: the cursor in the world, a model corner, middle or centre it snapped
+    /// to (off the work plane too), else its point on the work plane.
+    world: Option<solidcore_record::Vec3>,
+    /// The work plane the running object tool picks its points on, fixed when it starts.
+    pub(crate) plane: Option<Plane>,
 }
 
 /// What each tool does, for its tooltip (CADCraft's descriptions).
@@ -307,6 +324,8 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
         let cmd = solidcraft_engine::find_command(id).map_or("obj", |c| c.id);
         app.tool = crate::tools::Tool::for_command(cmd);
         app.cad.objects = true;
+        app.cad.plane = Some(objects::plane(app));
+        app.cad.world = None;
         app.cad.run = Some(Running { cmd, m, typed: String::new(), error: None });
         let step = with_machine(app, |m, app| m.begin(app));
         after(app, step);
@@ -362,6 +381,7 @@ fn after(app: &mut SolveApp, step: Res) {
 fn end(app: &mut SolveApp) {
     app.cad.run = None;
     app.cad.objects = false;
+    app.cad.plane = None;
     if app.tool.as_ref().is_some_and(|t| t.kind == crate::tools::Kind::Cad) {
         app.tool = None;
     }
@@ -433,7 +453,7 @@ fn typed_input(app: &SolveApp, prompt: &Prompt, t: &str) -> Result<Input, String
 
 fn active(app: &SolveApp) -> Option<(u64, solidcraft_engine::sketch::Sketch, Plane)> {
     if app.cad.objects && app.session.active_sketch.is_none() {
-        return Some((0, solidcraft_engine::sketch::Sketch::default(), objects::plane(app)));
+        return Some((0, solidcraft_engine::sketch::Sketch::default(), app.cad.plane.unwrap_or_else(|| objects::plane(app))));
     }
     let sid = app.session.active_sketch?;
     let st = crate::open_meshing::shown_world(app);
@@ -465,12 +485,21 @@ pub fn hover(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     });
     let s = &app.cad.settings;
     let mut hit = None;
+    let mut world = None;
     let mut track = None;
     let mut p = raw;
-    // Selecting picks objects: the cursor is not snapped then.
-    if !prompt.accept.select {
+    // Selecting or picking objects: the cursor is not snapped then.
+    if !prompt.accept.select && !prompt.accept.pick {
         let mm_px = snap::mm_per_px(&plane, proj, raw);
-        if s.osnap && !crate::drag_snap::suppressed() {
+        if app.cad.objects && s.osnap && !crate::drag_snap::suppressed() {
+            // Outside a sketch the pointer snaps to what it is over on screen, wherever that
+            // lies off the work plane: a corner seen over the plane is that corner (#b07).
+            let modes = s.modes | if s.nearest { 1 << snap::NEA } else { 0 };
+            if let Some((w, kind)) = snap::world_snap(app, proj, pos, s.aperture.max(6.0), modes) {
+                hit = Some(snap::Hit { p: plane.to_local(w), kind });
+                world = Some(w);
+            }
+        } else if s.osnap && !crate::drag_snap::suppressed() {
             let own = geo::ents(&sk);
             let foreign = snap::foreign(app, sid, &plane);
             let aperture = f64::from(s.aperture) * mm_px;
@@ -512,6 +541,11 @@ pub fn hover(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     }
     app.cad.raw = Some(raw);
     app.cad.cursor = Some(p);
+    // A snapped world point stands unless a typed value moved the cursor off it.
+    app.cad.world = Some(match (world, hit) {
+        (Some(w), Some(h)) if h.p.dist(p) < 1e-9 => w,
+        _ => plane.to_world(p),
+    });
     app.cad.hit = hit;
     app.cad.track = track;
     app.cad.hover_curve = curve;
@@ -549,6 +583,8 @@ pub struct DynEntry {
     /// The point the values are measured from (the last point when relative).
     pub origin: Vec2,
     pub relative: bool,
+    /// Length and Height from the base (a rectangle's sides).
+    pub sides: bool,
 }
 
 impl DynEntry {
@@ -578,19 +614,20 @@ impl DynEntry {
 /// The boxes for a point prompt (none for other prompts, or typed `@`/`#` entries, which go
 /// through as typed).
 pub fn dyn_entry(s: &Settings, prompt: &Prompt, typed: &str) -> Option<DynEntry> {
-    if !s.dyn_input || !prompt.accept.point || prompt.accept.select || typed.starts_with('@') || typed.starts_with('#') {
+    if !s.dyn_input || !prompt.accept.point || prompt.accept.select || prompt.accept.pick || typed.starts_with('@') || typed.starts_with('#') {
         return None;
     }
-    let relative = prompt.base.is_some() && s.dyn_relative;
+    let relative = prompt.base.is_some() && (s.dyn_relative || prompt.sides);
     let origin = if relative { prompt.base.unwrap_or(Vec2::ZERO) } else { Vec2::ZERO };
     let (polar, first, second, locked) = if let Some((a, b)) = typed.split_once('<') {
         (true, a, b, true)
     } else if let Some((a, b)) = typed.split_once(',') {
         (false, a, b, true)
     } else {
-        (prompt.base.is_some() && s.dyn_polar, typed, "", false)
+        (prompt.base.is_some() && s.dyn_polar && !prompt.sides, typed, "", false)
     };
-    Some(DynEntry { polar, first: first.to_string(), second: second.to_string(), first_locked: locked, origin, relative })
+    let sides = prompt.sides && relative && !polar;
+    Some(DynEntry { polar, first: first.to_string(), second: second.to_string(), first_locked: locked, origin, relative, sides })
 }
 
 /// Tab at a point prompt: lock the first box (typing the separator, or the live value and the
@@ -647,12 +684,15 @@ pub fn click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     }
     // The design's object tools: a click at a selection prompt picks the object under it.
     if app.cad.objects && prompt.accept.select {
-        if let Some(body) = crate::viewport::body_at(app, proj, pos) {
+        // A reference plane's line first: it is thin and lies over the bodies.
+        if let Some(crate::viewport::Hit::Plane { name, .. }) = crate::reference_planes::hit(app, proj, pos) {
+            feed(app, Input::Object(name));
+        } else if let Some(body) = crate::viewport::body_at(app, proj, pos) {
             feed(app, Input::Object(body));
         }
         return;
     }
-    let p = if prompt.accept.select { app.cad.raw.unwrap_or(p) } else { p };
+    let p = if prompt.accept.select || prompt.accept.pick { app.cad.raw.unwrap_or(p) } else { p };
     feed(app, Input::Point { p, curve: app.cad.hover_curve.clone() });
 }
 
@@ -672,6 +712,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if app.cad.run.is_none() {
         app.cad.objects = false;
+        app.cad.plane = None;
     }
     if app.session.active_sketch.is_none() && !app.cad.objects {
         return;
@@ -813,9 +854,49 @@ fn bar(app: &mut SolveApp, ctx: &egui::Context) {
                 },
             );
         });
+    if clicked.is_none()
+        && let Some((p, ..)) = &prompt
+    {
+        clicked = keyword_popup(ctx, rect, p);
+    }
     if let Some(i) = clicked {
         app.cad.pending = Some(i);
     }
+}
+
+/// A question with options and no point to pick (Mirror's "Erase source objects?"): the options
+/// as buttons beside where the pointer was when it was asked, to click instead of typing.
+fn keyword_popup(ctx: &egui::Context, view: egui::Rect, p: &Prompt) -> Option<Input> {
+    let anchor_id = egui::Id::new("cad_keyword_popup_anchor");
+    if p.keywords.is_empty() || p.accept.point {
+        ctx.data_mut(|d| d.remove::<(String, Pos2)>(anchor_id));
+        return None;
+    }
+    let anchor = match ctx.data(|d| d.get_temp::<(String, Pos2)>(anchor_id)) {
+        Some((m, at)) if m == p.message => at,
+        _ => {
+            let at = ctx.pointer_latest_pos().filter(|q| view.contains(*q)).unwrap_or(view.center()) + vec2(16.0, 16.0);
+            ctx.data_mut(|d| d.insert_temp(anchor_id, (p.message.clone(), at)));
+            at
+        }
+    };
+    let t = crate::theme::Tokens::get();
+    let mut picked = None;
+    egui::Area::new(egui::Id::new("cad_keyword_popup")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
+        egui::Frame::new().fill(t.panel).stroke(Stroke::new(1.0, t.border)).corner_radius(6.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+            ui.label(egui::RichText::new(&p.message).color(t.text));
+            for k in &p.keywords {
+                let default = p.default.as_deref() == Some(*k);
+                let text = if default { egui::RichText::new(*k).strong() } else { egui::RichText::new(*k) };
+                let resp = ui.add(egui::Button::new(text).min_size(vec2(120.0, 0.0)));
+                crate::scenario::publish_handle(&format!("cad:keyword:{k}"), resp.rect.center());
+                if resp.clicked() {
+                    picked = Some(Input::Keyword(k));
+                }
+            }
+        });
+    });
+    picked
 }
 
 /// The Drafting Settings window: snap and grid, polar tracking, object snap modes, dynamic input.
@@ -826,85 +907,101 @@ pub fn drafting_settings(app: &mut SolveApp, ctx: &egui::Context) {
     let mut open = true;
     let tab_id = egui::Id::new("cad_drafting_tab");
     let mut tab: usize = ctx.data(|d| d.get_temp(tab_id)).unwrap_or(2);
-    egui::Window::new("Drafting Settings").open(&mut open).collapsible(false).resizable(false).default_width(380.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            for (k, name) in ["Snap and Grid", "Polar Tracking", "Object Snap", "Dynamic Input"].iter().enumerate() {
-                ui.selectable_value(&mut tab, k, *name);
-            }
-        });
-        ui.separator();
-        let s = &mut app.cad.settings;
-        match tab {
-            0 => {
-                ui.checkbox(&mut s.grid_snap, "Snap On (F9)");
-                ui.horizontal(|ui| {
-                    ui.label("Snap and grid spacing");
-                    if ui.add(egui::TextEdit::singleline(&mut s.step_text).desired_width(70.0)).changed()
-                        && let Some(v) = geo::number(&s.step_text).filter(|v| *v > 0.0)
-                    {
-                        s.grid_step = v;
-                    }
-                    ui.label("mm");
-                });
-                ui.checkbox(&mut s.ortho, "Ortho mode (F8)");
-            }
-            1 => {
-                if ui.checkbox(&mut s.polar, "Polar Tracking On (F10)").changed() && s.polar {
-                    s.ortho = false;
+    // Wide enough for the four tabs on one line and the object snap modes in two columns, each
+    // mode's marker beside its own name (#b07: the window was narrow, labels hid and mixed).
+    egui::Window::new("Drafting Settings").open(&mut open).collapsible(false).resizable(false).min_width(520.0).default_width(520.0).show(
+        ctx,
+        |ui| {
+            ui.set_min_width(520.0);
+            ui.horizontal(|ui| {
+                for (k, name) in ["Snap and Grid", "Polar Tracking", "Object Snap", "Dynamic Input"].iter().enumerate() {
+                    ui.selectable_value(&mut tab, k, *name);
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Increment angle");
-                    egui::ComboBox::from_id_salt("cad_polar_step").selected_text(format!("{}°", geo::fmt(s.polar_step))).show_ui(ui, |ui| {
-                        for a in [90.0, 60.0, 45.0, 30.0, 22.5, 18.0, 15.0, 10.0, 5.0] {
-                            ui.selectable_value(&mut s.polar_step, a, format!("{}°", geo::fmt(a)));
+            });
+            ui.separator();
+            let s = &mut app.cad.settings;
+            match tab {
+                0 => {
+                    ui.checkbox(&mut s.grid_snap, "Snap On (F9)");
+                    ui.horizontal(|ui| {
+                        ui.label("Snap and grid spacing");
+                        if ui.add(egui::TextEdit::singleline(&mut s.step_text).desired_width(70.0)).changed()
+                            && let Some(v) = geo::number(&s.step_text).filter(|v| *v > 0.0)
+                        {
+                            s.grid_step = v;
+                        }
+                        ui.label("mm");
+                    });
+                    ui.checkbox(&mut s.ortho, "Ortho mode (F8)");
+                }
+                1 => {
+                    if ui.checkbox(&mut s.polar, "Polar Tracking On (F10)").changed() && s.polar {
+                        s.ortho = false;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Increment angle");
+                        egui::ComboBox::from_id_salt("cad_polar_step").selected_text(format!("{}°", geo::fmt(s.polar_step))).show_ui(ui, |ui| {
+                            for a in [90.0, 60.0, 45.0, 30.0, 22.5, 18.0, 15.0, 10.0, 5.0] {
+                                ui.selectable_value(&mut s.polar_step, a, format!("{}°", geo::fmt(a)));
+                            }
+                        });
+                    });
+                    ui.label(egui::RichText::new("The cursor follows rays from the last point at multiples of the angle.").small());
+                }
+                2 => {
+                    ui.checkbox(&mut s.osnap, "Object Snap On (F3)");
+                    ui.add_space(4.0);
+                    egui::Grid::new("cad_osnap_modes").num_columns(2).min_col_width(240.0).spacing(egui::vec2(16.0, 6.0)).show(ui, |ui| {
+                        for (k, (kind, name)) in snap::MODES.iter().enumerate() {
+                            let bit = 1u16 << kind;
+                            let mut on = s.modes & bit != 0;
+                            // The marker and its checkbox share one cell, so each stays by its name.
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                                snap::paint_glyph(
+                                    ui.painter(),
+                                    r.center(),
+                                    &snap::Hit { p: Vec2::ZERO, kind: *kind },
+                                    Color32::from_rgb(0x2e, 0xb8, 0x4a),
+                                );
+                                ui.add_space(4.0);
+                                if ui.checkbox(&mut on, *name).changed() {
+                                    s.modes = if on { s.modes | bit } else { s.modes & !bit };
+                                }
+                            });
+                            if k % 2 == 1 {
+                                ui.end_row();
+                            }
                         }
                     });
-                });
-                ui.label(egui::RichText::new("The cursor follows rays from the last point at multiples of the angle.").small());
-            }
-            2 => {
-                ui.checkbox(&mut s.osnap, "Object Snap On (F3)");
-                ui.add_space(4.0);
-                egui::Grid::new("cad_osnap_modes").num_columns(2).show(ui, |ui| {
-                    for (k, (kind, name)) in snap::MODES.iter().enumerate() {
-                        let bit = 1u16 << kind;
-                        let mut on = s.modes & bit != 0;
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                        snap::paint_marker(ui.painter(), r.center(), &snap::Hit { p: Vec2::ZERO, kind: *kind }, Color32::from_rgb(0x2e, 0xb8, 0x4a));
-                        if ui.checkbox(&mut on, *name).changed() {
-                            s.modes = if on { s.modes | bit } else { s.modes & !bit };
+                    ui.horizontal(|ui| {
+                        if ui.button("Select All").clicked() {
+                            s.modes = snap::MODES.iter().fold(0, |m, (k, _)| m | (1 << k));
                         }
-                        if k % 2 == 1 {
-                            ui.end_row();
+                        if ui.button("Clear All").clicked() {
+                            s.modes = 0;
                         }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Select All").clicked() {
-                        s.modes = snap::MODES.iter().fold(0, |m, (k, _)| m | (1 << k));
-                    }
-                    if ui.button("Clear All").clicked() {
-                        s.modes = 0;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Aperture size");
-                    ui.add(egui::Slider::new(&mut s.aperture, 4.0..=30.0).suffix(" px"));
-                });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Aperture size");
+                        ui.add(egui::Slider::new(&mut s.aperture, 4.0..=30.0).suffix(" px"));
+                    });
+                }
+                _ => {
+                    ui.checkbox(&mut s.dyn_input, "Enable Pointer Input (F12)");
+                    ui.label("For second or next points, default to:");
+                    ui.radio_value(&mut s.dyn_polar, true, "Polar format (distance < angle)");
+                    ui.radio_value(&mut s.dyn_polar, false, "Cartesian format (X, Y)");
+                    ui.radio_value(&mut s.dyn_relative, true, "Relative coordinates (from the last point)");
+                    ui.radio_value(&mut s.dyn_relative, false, "Absolute coordinates");
+                    ui.label(
+                        egui::RichText::new("Type a value, Tab to the next box, Enter to accept. # types an absolute point, @ a relative one.")
+                            .small(),
+                    );
+                }
             }
-            _ => {
-                ui.checkbox(&mut s.dyn_input, "Enable Pointer Input (F12)");
-                ui.label("For second or next points, default to:");
-                ui.radio_value(&mut s.dyn_polar, true, "Polar format (distance < angle)");
-                ui.radio_value(&mut s.dyn_polar, false, "Cartesian format (X, Y)");
-                ui.radio_value(&mut s.dyn_relative, true, "Relative coordinates (from the last point)");
-                ui.radio_value(&mut s.dyn_relative, false, "Absolute coordinates");
-                ui.label(
-                    egui::RichText::new("Type a value, Tab to the next box, Enter to accept. # types an absolute point, @ a relative one.").small(),
-                );
-            }
-        }
-    });
+        },
+    );
     ctx.data_mut(|d| d.insert_temp(tab_id, tab));
     if !open {
         app.cad.settings.dialog = false;
@@ -930,6 +1027,12 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
         for prev in run.m.preview(app, c) {
             match prev {
                 Prev::Line(pts) => line(&pts, Stroke::new(1.6, t.accent)),
+                Prev::World(pts) => {
+                    let s: Vec<Pos2> = pts.iter().filter_map(|p| proj.to_screen(*p)).collect();
+                    if s.len() >= 2 {
+                        painter.line(s, Stroke::new(1.6, t.accent));
+                    }
+                }
                 Prev::Window(a, b) => {
                     let quad = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y), a];
                     let crossing = b.x < a.x;
@@ -950,7 +1053,8 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
                 }
             }
         }
-        if let Some(sp) = to(c) {
+        let at = if app.cad.objects { app.cad.world.and_then(|w| proj.to_screen(w)) } else { None };
+        if let Some(sp) = at.or_else(|| to(c)) {
             if let Some(h) = &app.cad.hit {
                 snap::paint_marker(painter, sp, h, Color32::from_rgb(0x2e, 0xb8, 0x4a));
             }
@@ -1075,14 +1179,26 @@ fn dyn_boxes(p: &egui::Painter, at: Pos2, message: &str, e: &DynEntry, cursor: V
     let r3 = |v: f64| geo::fmt((v * 1000.0).round() / 1000.0);
     let cells = [
         (
-            if e.polar { "" } else { "X" },
+            if e.polar {
+                ""
+            } else if e.sides {
+                "Length"
+            } else {
+                "X"
+            },
             if e.first.is_empty() { r3(live1) } else { e.first.clone() },
             !e.first.is_empty(),
             e.first_locked,
             !e.first_locked,
         ),
         (
-            if e.polar { "<" } else { "Y" },
+            if e.polar {
+                "<"
+            } else if e.sides {
+                "Height"
+            } else {
+                "Y"
+            },
             if e.second.is_empty() { if e.polar { format!("{}°", (live2 * 10.0).round() / 10.0) } else { r3(live2) } } else { e.second.clone() },
             !e.second.is_empty(),
             false,

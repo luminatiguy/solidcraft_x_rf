@@ -337,7 +337,13 @@ pub fn left_timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
         .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .scroll_source(egui::scroll_area::ScrollSource { scroll_bar: true, mouse_wheel: true, ..egui::scroll_area::ScrollSource::NONE })
-        .show(ui, |ui| vertical_features(app, ui, names));
+        .show(ui, |ui| {
+            if app.preferences.history_commands {
+                crate::history_commands::column(app, ui, names);
+            } else {
+                vertical_features(app, ui, names);
+            }
+        });
 }
 
 fn timeline_transport(app: &mut SolveApp, ui: &mut egui::Ui, names: bool) {

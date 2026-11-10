@@ -23,7 +23,7 @@ mod occurrence_gizmo_tests;
 #[path = "browser_model.rs"]
 mod model;
 
-mod features;
+pub(crate) mod features;
 mod point_clouds;
 pub use point_clouds::CloudPanel;
 pub(crate) use point_clouds::point_cloud_tracks;

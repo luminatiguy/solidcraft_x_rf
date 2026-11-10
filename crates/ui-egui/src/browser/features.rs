@@ -77,6 +77,21 @@ pub(crate) fn reveal_in_history(app: &mut SolveApp, id: u64) {
     app.tree.reveal_feature = Some(Reveal { id, path, history: true });
 }
 
+/// What the Features folder lists: the objects that stand on their own outside the bodies, a
+/// Model Line's sketch and a reference plane. The steps that made the bodies are not listed (a
+/// body is edited from itself; its sketches are in the Sketches folder).
+/// Whether the Features folder lists `f`: with Features lists every step on, every feature.
+fn listed(app: &SolveApp, f: &solidcraft_engine::doc::Feature) -> bool {
+    app.preferences.browser_features_all || listed_feature(f)
+}
+
+pub(crate) fn listed_feature(f: &solidcraft_engine::doc::Feature) -> bool {
+    match &f.kind {
+        FeatureKind::Sketch { .. } => f.name.starts_with("Model Line"),
+        _ => f.name.starts_with(crate::reference_planes::PREFIX),
+    }
+}
+
 /// Feature folders hide later rows only while editing; history always lists every feature.
 fn shown_features(app: &SolveApp, compact: bool) -> usize {
     let n = app.session.doc.features.len();
@@ -88,16 +103,7 @@ pub(super) fn rows(app: &mut SolveApp, ui: &mut egui::Ui, component: u64, path: 
     // marker, in place of the timeline.
     let compact = app.preferences.history_in_browser;
     let shown = shown_features(app, compact);
-    let has_features = match app.tree.model.as_ref().filter(|m| m.matches(&app.session) && !compact) {
-        Some(model) => model.features.get(&component).is_some_and(|features| features.iter().any(|&index| index < shown)),
-        None => app
-            .session
-            .doc
-            .features
-            .iter()
-            .take(shown)
-            .any(|feature| feature.component == component && (compact || !matches!(feature.kind, FeatureKind::Sketch { .. }))),
-    };
+    let has_features = app.session.doc.features.iter().take(shown).any(|feature| feature.component == component && (compact || listed(app, feature)));
     if !has_features {
         return;
     }
@@ -114,13 +120,7 @@ pub(super) fn rows(app: &mut SolveApp, ui: &mut egui::Ui, component: u64, path: 
     } else {
         #[cfg(test)]
         MARKS_WORKED_OUT.with(|n| n.set(n.get() + 1));
-        app.session
-            .doc
-            .features
-            .iter()
-            .filter(|f| f.component == component && (compact || !matches!(f.kind, FeatureKind::Sketch { .. })))
-            .map(|f| f.id)
-            .collect()
+        app.session.doc.features.iter().filter(|f| f.component == component && (compact || listed(app, f))).map(|f| f.id).collect()
     };
     let (status, tip) = crate::timeline::worst_status(app, &ids);
     let r =
@@ -131,18 +131,15 @@ pub(super) fn rows(app: &mut SolveApp, ui: &mut egui::Ui, component: u64, path: 
     if !open {
         return;
     }
-    let indices = match app.tree.model.as_ref().filter(|m| m.matches(&app.session) && !compact) {
-        Some(model) => model.features.get(&component).cloned().unwrap_or_default(),
-        None => app
-            .session
-            .doc
-            .features
-            .iter()
-            .take(shown)
-            .enumerate()
-            .filter_map(|(i, f)| (f.component == component && (compact || !matches!(f.kind, FeatureKind::Sketch { .. }))).then_some(i))
-            .collect(),
-    };
+    let indices: Vec<usize> = app
+        .session
+        .doc
+        .features
+        .iter()
+        .take(shown)
+        .enumerate()
+        .filter_map(|(i, f)| (f.component == component && (compact || listed(app, f))).then_some(i))
+        .collect();
     let here = Here { component, path, scope: &scope };
     // The feature that made what is under the cursor or picked in the viewport, as the history
     // lights it, and in the history layout what a selected history row lights.

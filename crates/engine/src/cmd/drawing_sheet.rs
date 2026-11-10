@@ -185,7 +185,7 @@ fn view_hatches(
     let mut out = Vec::new();
     for (h, mesh) in hatches {
         let h = h.clone();
-        let Some(face) = crate::hatch::resolve_face(&mesh, &h) else { continue };
+        let Some(face) = crate::hatch::resolve_face(mesh, &h) else { continue };
         let tris: Vec<[solidcore_record::Vec3; 3]> =
             mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, f)| **f as usize == face).filter_map(|(t, _)| mesh.tri(t)).collect();
         let size = mesh.positions.iter().fold(0.0f64, |m, p| m.max(p.x.abs().max(p.y.abs()).max(p.z.abs())));
@@ -196,7 +196,7 @@ fn view_hatches(
             && n.dot(back) > 1e-6
         {
             // Seen whole? Its outline, lifted off the face, is nowhere hidden.
-            let loops3 = crate::hatch::face_loops(&mesh, face);
+            let loops3 = crate::hatch::face_loops(mesh, face);
             let parts: Vec<Part> = loops3.iter().map(|l| Part { points: l.iter().map(|p| *p + n * lift).collect(), on_top: false }).collect();
             let d = projection::drawing(scene, &parts, cam).map_err(|e| bad(CMD, e))?;
             // Edges shared with the faces around it may read as hidden here and there where they
@@ -218,7 +218,7 @@ fn view_hatches(
             }
         }
         // Otherwise the pattern's lines, hidden where the bodies cover them.
-        let segs = crate::hatch::segments(&mesh, &h, lift);
+        let segs = crate::hatch::segments(mesh, &h, lift);
         let parts: Vec<Part> = segs.into_iter().take(MAX_HATCH_LINES).map(|(a, b)| Part { points: vec![a, b], on_top: false }).collect();
         if parts.is_empty() {
             continue;

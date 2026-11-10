@@ -17,6 +17,7 @@ pub(super) struct Model {
     pub bodies: HashMap<u64, Vec<usize>>,
     pub sketches: HashMap<u64, Vec<usize>>,
     pub planes: HashMap<u64, Vec<usize>>,
+    #[allow(dead_code)]
     pub features: HashMap<u64, Vec<usize>>,
     pub children: HashMap<u64, Vec<u64>>,
     placements: HashMap<Vec<u64>, Option<Arc<OccurrencePlacement>>>,

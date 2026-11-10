@@ -45,7 +45,7 @@ pub fn selection_params(app: &SolveApp) -> Value {
     json!({ "items": items, "occurrences": occurrences, "canvases": app.tree.picked_canvases, "joints": app.tree.picked_joints })
 }
 
-/// A Blend, Sweep or Swept Blend body deleted takes its feature and the sketches that made it
+/// An Extrusion, Revolve, Blend, Sweep or Swept Blend body deleted takes its feature and the sketches that made it
 /// (its sections, its path), unless another feature still uses one of them: a form is one object.
 fn with_form_sketches(app: &SolveApp, items: &mut Vec<solidcraft_engine::Sel>) {
     use solidcraft_engine::Sel;
@@ -60,6 +60,8 @@ fn with_form_sketches(app: &SolveApp, items: &mut Vec<solidcraft_engine::Sel>) {
         let sketches: Vec<u64> = match &f.kind {
             FeatureKind::Loft { sections, .. } => sections.iter().map(|s| s.sketch.0).collect(),
             FeatureKind::Sweep { sketch, path_sketch, .. } => vec![sketch.0, path_sketch.0],
+            // An Extrusion or Revolve body owns its sketch too: deleting the body deletes it.
+            FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } => vec![sketch.0],
             _ => continue,
         };
         // Only a feature that made this one body.

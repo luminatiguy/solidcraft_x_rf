@@ -243,6 +243,19 @@ pub fn grid(p: Vec2, step: f64) -> Vec2 {
 
 /// CADCraft's snap markers: a square at an end, a triangle at a middle, a circle at a centre…
 pub fn paint_marker(p: &egui::Painter, at: egui::Pos2, hit: &Hit, color: egui::Color32) {
+    if !paint_glyph(p, at, hit, color) {
+        return;
+    }
+    let vec2 = egui::vec2;
+    let galley = p.layout_no_wrap(hit.name().to_string(), egui::FontId::proportional(11.0), egui::Color32::BLACK);
+    let r = egui::Rect::from_min_size(at + vec2(10.0, 10.0), galley.size() + vec2(6.0, 2.0));
+    p.rect_filled(r, 2.0, egui::Color32::from_rgb(0xff, 0xff, 0xe1));
+    p.galley(r.min + vec2(3.0, 1.0), galley, egui::Color32::BLACK);
+}
+
+/// A snap's glyph alone, without its name (the Drafting Settings list has the name beside it).
+/// False for the grid's cross, which has no name label.
+pub fn paint_glyph(p: &egui::Painter, at: egui::Pos2, hit: &Hit, color: egui::Color32) -> bool {
     use egui::{Shape as S, Stroke, vec2};
     let s = 5.5;
     let st = Stroke::new(2.0, color);
@@ -273,11 +286,109 @@ pub fn paint_marker(p: &egui::Painter, at: egui::Pos2, hit: &Hit, color: egui::C
         _ => {
             p.line_segment([at + vec2(-s * 0.6, 0.0), at + vec2(s * 0.6, 0.0)], Stroke::new(1.0, color));
             p.line_segment([at + vec2(0.0, -s * 0.6), at + vec2(0.0, s * 0.6)], Stroke::new(1.0, color));
-            return;
+            return false;
         }
     }
-    let galley = p.layout_no_wrap(hit.name().to_string(), egui::FontId::proportional(11.0), egui::Color32::BLACK);
-    let r = egui::Rect::from_min_size(at + vec2(10.0, 10.0), galley.size() + vec2(6.0, 2.0));
-    p.rect_filled(r, 2.0, egui::Color32::from_rgb(0xff, 0xff, 0xe1));
-    p.galley(r.min + vec2(3.0, 1.0), galley, egui::Color32::BLACK);
+    true
+}
+
+thread_local! {
+    /// The model's snap points in the world (corners, edges' middles, circles' centres), kept
+    /// while the model stays the same.
+    static WORLD_POINTS: std::cell::RefCell<Option<(usize, Arc<Vec<(Vec3, u8)>>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The centre of a closed polyline when all its points lie on one circle.
+fn circle_centre3(pts: &[Vec3]) -> Option<Vec3> {
+    if pts.len() < 6 {
+        return None;
+    }
+    let (f, l) = (*pts.first()?, *pts.last()?);
+    let n = pts.len() as f64;
+    let c = pts.iter().fold(Vec3::ZERO, |a, p| a + *p) * (1.0 / n);
+    let r = f.dist(c);
+    if r < 1e-9 || f.dist(l) > r * 1e-3 {
+        return None;
+    }
+    let tol = (r * 2e-3).max(1e-4);
+    pts.iter().all(|p| (p.dist(c) - r).abs() <= tol).then_some(c)
+}
+
+/// The middle of a polyline, half its length along it.
+fn middle3(pts: &[Vec3]) -> Option<Vec3> {
+    let total: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let mut left = total * 0.5;
+    for w in pts.windows(2) {
+        let d = w[0].dist(w[1]);
+        if d >= left && d > 0.0 {
+            return Some(w[0] + (w[1] - w[0]) * (left / d));
+        }
+        left -= d;
+    }
+    pts.first().copied()
+}
+
+/// The model's corners, edges' middles and circles' centres, and those of the shown sketches, in
+/// the world: what the MODIFY tools snap to outside a sketch.
+pub fn world_points(app: &SolveApp) -> Arc<Vec<(Vec3, u8)>> {
+    let st = crate::open_meshing::shown_world(app);
+    let key = Arc::as_ptr(&st) as usize;
+    if let Some(found) = WORLD_POINTS.with(|c| c.borrow().as_ref().filter(|k| k.0 == key).map(|k| k.1.clone())) {
+        return found;
+    }
+    let mut out: Vec<(Vec3, u8)> = Vec::new();
+    let mut add = |pts: &[Vec3]| {
+        if pts.len() < 2 {
+            return;
+        }
+        if let Some(c) = circle_centre3(pts) {
+            out.push((c, CEN));
+            return;
+        }
+        if let (Some(a), Some(b)) = (pts.first(), pts.last()) {
+            out.push((*a, END));
+            out.push((*b, END));
+        }
+        if let Some(m) = middle3(pts) {
+            out.push((m, MID));
+        }
+    };
+    for b in st.bodies.iter().filter(|b| app.body_visible(&b.name)) {
+        let (m, place) = b.mesh_in_place();
+        let moved = !solidcraft_engine::doc::is_identity(&place);
+        for e in m.edges.iter().take(20_000) {
+            let pts: Vec<Vec3> = e.iter().map(|p| if moved { solidcraft_engine::doc::apply_point(&place, *p) } else { *p }).collect();
+            add(&pts);
+        }
+    }
+    for id in crate::viewport::visible_sketches(app) {
+        let Some(ss) = st.sketch(id) else { continue };
+        for e in super::geo::ents(&ss.sketch).iter().take(20_000) {
+            let pts: Vec<Vec3> = e.shape.polyline().into_iter().map(|p| ss.plane.to_world(p)).collect();
+            add(&pts);
+        }
+    }
+    out.truncate(200_000);
+    let out = Arc::new(out);
+    WORLD_POINTS.with(|c| *c.borrow_mut() = Some((key, out.clone())));
+    out
+}
+
+/// The world snap point nearest the pointer on screen, within `aperture` points, of the kinds in
+/// `modes`: what the pointer is over, wherever it lies off the work plane.
+pub fn world_snap(app: &SolveApp, proj: &Proj, pos: egui::Pos2, aperture: f32, modes: u16) -> Option<(Vec3, u8)> {
+    let mut best: Option<(f32, Vec3, u8)> = None;
+    for (p, kind) in world_points(app).iter() {
+        if modes & (1 << kind) == 0 {
+            continue;
+        }
+        let Some(s) = proj.to_screen(*p) else { continue };
+        let d = s.distance(pos);
+        // Centres and middles come before the corners that sit almost on them.
+        let d = if *kind == END { d } else { d + 0.5 };
+        if d <= aperture && best.is_none_or(|b| d < b.0) {
+            best = Some((d, *p, *kind));
+        }
+    }
+    best.map(|(_, p, k)| (p, k))
 }

@@ -122,7 +122,7 @@ impl PlineM {
         if s.dist(e) < 1e-9 {
             return Ok(());
         }
-        let (ids, dir) = if self.arc && self.verts.len() >= 1 {
+        let (ids, dir) = if self.arc && !self.verts.is_empty() {
             match self.arc_to(e) {
                 Some((m, d)) => (add_arc3(app, s, m, e)?, d),
                 None => (add_line(app, s, e)?, (e - s).normalized().unwrap_or(Vec2::X)),
@@ -434,7 +434,7 @@ impl Machine for RectM {
             (3, _) => Prompt::new("Specify length for rectangles", Accept::NUMBER),
             (4, _) => Prompt::new("Specify width for rectangles", Accept::NUMBER),
             (_, None) => Prompt::new("Specify first corner point", Accept::POINT).kw(&["Chamfer", "Fillet"]),
-            (_, Some(a)) => Prompt::new("Specify other corner point", Accept::POINT).kw(&["Dimensions"]).base(Some(a)),
+            (_, Some(a)) => Prompt::new("Specify other corner point", Accept::POINT).kw(&["Dimensions"]).base(Some(a)).sides(),
         }
     }
     fn input(&mut self, app: &mut SolveApp, i: Input) -> Res {

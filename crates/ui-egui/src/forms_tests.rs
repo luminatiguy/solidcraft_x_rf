@@ -1,15 +1,15 @@
 //! The MODEL tab's form tools (`forms.rs`): each opens a sketch on the work plane, Finish leads to
-//! the next sketch or the feature window filled in, and OK builds the form.
-use crate::dialogs::Kind;
+//! the next sketch or builds the form at once, its values in Properties (no window).
 use crate::scenario::Harness;
 use serde_json::json;
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::{FeatureKind, Operation};
 use solidcraft_engine::geom::prelude::*;
 
+/// The form is built when its last sketch finishes: no window opens; wait for the model.
 fn ok(h: &mut Harness) {
     h.frames(3);
-    h.step(&json!({"widget":"OK"})).unwrap();
+    assert!(h.app.dialog.is_none(), "no feature window opens: {:?}", h.app.dialog.as_ref().map(|d| &d.kind));
     for _ in 0..300 {
         if h.app.dialog.is_none() {
             break;
@@ -61,11 +61,15 @@ fn extrusion_sketches_then_extrudes_its_loops() {
     h.app.run("sketch.circle.center", json!({"center": [20, 10], "radius": 5})).unwrap();
     finish(&mut h);
     assert!(h.app.session.active_sketch.is_none());
-    let d = h.app.dialog.as_ref().expect("Extrude opened");
-    assert!(matches!(d.kind, Kind::Extrude { .. }), "{:?}", d.kind);
-    assert_eq!(d.inputs[0].items.len(), 1, "the circle inside the rectangle is a hole: {:?}", d.inputs[0].items);
     ok(&mut h);
     assert_eq!(bodies(&h), 1);
+    match last_kind(&h) {
+        FeatureKind::Extrude { operation, .. } => assert_eq!(operation, Operation::NewBody),
+        k => panic!("{k:?}"),
+    }
+    let body = h.app.session.model.state().bodies[0].name.clone();
+    assert_eq!(body, "Extrusion 1", "a body is named after its tool");
+    assert!(h.app.shell_ui.properties, "its values are in Properties");
 }
 
 #[test]
@@ -75,13 +79,6 @@ fn a_void_extrusion_cuts() {
     start(&mut h, "form.void.extrusion");
     h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 5})).unwrap();
     finish(&mut h);
-    let d = h.app.dialog.as_ref().expect("Extrude opened");
-    assert!(matches!(d.kind, Kind::Extrude { operation: 2, .. }), "{:?}", d.kind);
-    let k = h.app.dialog.as_mut().unwrap();
-    if let Kind::Extrude { distance, direction, .. } = &mut k.kind {
-        *distance = "30 mm".into();
-        *direction = 0;
-    }
     ok(&mut h);
     match last_kind(&h) {
         FeatureKind::Extrude { operation, .. } => assert_eq!(operation, Operation::Cut),
@@ -104,11 +101,12 @@ fn blend_takes_a_base_and_a_top_sketch() {
     drop(st);
     h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 6})).unwrap();
     finish(&mut h);
-    let d = h.app.dialog.as_ref().expect("Loft opened");
-    assert!(matches!(d.kind, Kind::Loft { .. }), "{:?}", d.kind);
-    assert_eq!(d.inputs[0].items, vec![Sel::Profile { sketch: base, index: 0 }, Sel::Profile { sketch: top, index: 0 }]);
     ok(&mut h);
     assert_eq!(bodies(&h), 1);
+    match last_kind(&h) {
+        FeatureKind::Loft { sections, .. } => assert_eq!(sections.iter().map(|s| s.sketch.0).collect::<Vec<_>>(), [base, top]),
+        k => panic!("{k:?}"),
+    }
 }
 
 #[test]
@@ -135,10 +133,8 @@ fn revolve_needs_an_axis_line() {
     h.app.run("sketch.line", json!({"points": [[0, -5], [0, 40]], "ids": ["ax"]})).unwrap();
     h.app.run("sketch.centerline", json!({"curves": ["ax"], "value": true})).unwrap();
     finish(&mut h);
-    let d = h.app.dialog.as_ref().expect("Revolve opened");
-    assert!(matches!(d.kind, Kind::Revolve { .. }), "{:?}", d.kind);
-    assert_eq!(d.inputs[1].items.len(), 1, "the axis is filled in");
     ok(&mut h);
+    assert!(matches!(last_kind(&h), FeatureKind::Revolve { .. }));
     assert_eq!(bodies(&h), 1);
 }
 
@@ -158,10 +154,8 @@ fn sweep_takes_a_path_then_a_profile_across_it() {
     drop(st);
     h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 3})).unwrap();
     finish(&mut h);
-    let d = h.app.dialog.as_ref().expect("Sweep opened");
-    assert!(matches!(d.kind, Kind::Sweep { .. }), "{:?}", d.kind);
-    assert_eq!(d.inputs[1].items.len(), 2, "both path curves: {:?}", d.inputs[1].items);
     ok(&mut h);
+    assert!(matches!(last_kind(&h), FeatureKind::Sweep { .. }));
     assert_eq!(bodies(&h), 1);
 }
 
@@ -198,9 +192,8 @@ fn swept_blend_takes_a_profile_at_each_end() {
     drop(st);
     h.app.run("sketch.rectangle.two_point", json!({"p0": [-4, -4], "p1": [4, 4]})).unwrap();
     finish(&mut h);
-    let d = h.app.dialog.as_ref().expect("Loft opened");
-    assert!(matches!(d.kind, Kind::Loft { .. }), "{:?}", d.kind);
     ok(&mut h);
+    assert!(matches!(last_kind(&h), FeatureKind::Loft { .. }));
     assert_eq!(bodies(&h), 1);
 }
 
@@ -358,4 +351,54 @@ fn the_reference_plane_tool_keeps_the_view_and_sketches_square_to_it() {
     let st = crate::open_meshing::session_world(&h.app.session);
     let n = st.sketch(sk).unwrap().plane.normal();
     assert!(n.dot(before.basis().2).abs() > 0.999, "square to the view: {n:?}");
+}
+
+/// An Extrusion body and its sketch are one object: the sketch is named after it, hidden, kept
+/// out of the browser's Features, and deleted with it.
+#[test]
+fn an_extrusion_body_owns_its_sketch() {
+    let mut h = Harness::new();
+    start(&mut h, "form.extrusion");
+    let sketch = h.app.session.active_sketch.unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [10, 10]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    let name = h.app.session.doc.feature(sketch).map(|f| f.name.clone()).unwrap();
+    assert!(name.starts_with("Extrusion 1"), "{name}");
+    assert!(!crate::viewport::visible_sketches(&h.app).contains(&sketch), "a form's sketch is hidden");
+    let f = h.app.session.doc.feature(sketch).unwrap();
+    assert!(!crate::browser::features::listed_feature(f), "not in Features (by default)");
+    let body = h.app.session.model.state().bodies[0].name.clone();
+    h.app.session.selection = vec![Sel::Body { name: body }];
+    crate::delete::delete_selection(&mut h.app);
+    h.frames(20);
+    assert_eq!(bodies(&h), 0);
+    assert!(h.app.session.doc.feature(sketch).is_none(), "the sketch went with the body");
+}
+
+/// Two extrusions, the second drawn on the first one's top face, stay two bodies: a form never
+/// joins another body by touching it.
+#[test]
+fn a_form_on_another_bodys_face_stays_its_own_body() {
+    let mut h = Harness::new();
+    start(&mut h, "form.extrusion");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 20]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    let state = h.app.session.model.state();
+    let body = state.bodies.first().unwrap();
+    let face = body.body.faces(1e-3).unwrap().into_iter().find(|f| f.plane_normal.is_some_and(|n| n.z > 0.99)).unwrap();
+    let pick = Sel::Face { body: body.name.clone(), index: face.index, point: face.centroid };
+    drop(state);
+    h.app.forms.work_plane = Some(pick);
+    start(&mut h, "form.extrusion");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [5, 5], "p1": [15, 15]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    assert_eq!(bodies(&h), 2, "{:?}", h.app.session.log.last());
+    // The first body edited again: the second neither moves nor joins it.
+    let first = h.app.session.doc.features.iter().find(|f| matches!(f.kind, FeatureKind::Extrude { .. })).map(|f| f.id).unwrap();
+    h.app.run("timeline.redefine", json!({"feature": first, "command": "solid.extrude", "params": {"distance": "25 mm"}})).unwrap();
+    h.frames(5);
+    assert_eq!(bodies(&h), 2, "{:?}", h.app.session.log.last());
 }

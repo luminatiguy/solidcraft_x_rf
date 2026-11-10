@@ -98,9 +98,30 @@ struct PathInfo {
 struct FormSession {
     form: Form,
     void: bool,
-    /// The sketches made so far, in order; the last is the one open.
+    /// The sketches made so far, in order; the last is the one being drawn.
     sketches: Vec<u64>,
     path: Option<PathInfo>,
+    /// The object's name (`Extrusion 1`): its body's, its feature's, and its sketches' stem.
+    name: String,
+    /// The form's values, set in Properties while it is drawn (see [`Pending`]).
+    pending: Pending,
+}
+
+/// What a form makes, set in Properties before it is made: an Extrusion's Start and End, a
+/// Revolve's angle, a Blend's distance between its sketches.
+#[derive(Clone, Debug)]
+pub struct Pending {
+    pub start: String,
+    pub end: String,
+    pub angle: String,
+    /// The Blend's top sketch this far from the base (empty: sized from the base loop).
+    pub distance: String,
+}
+
+impl Default for Pending {
+    fn default() -> Self {
+        Pending { start: "0 mm".into(), end: "10 mm".into(), angle: "360 deg".into(), distance: String::new() }
+    }
 }
 
 /// A feature window to fill once it is open.
@@ -109,6 +130,8 @@ struct Fill {
     command: &'static str,
     inputs: Vec<(usize, Vec<Sel>)>,
     void: bool,
+    name: String,
+    pending: Pending,
     /// Frames left to wait for the window.
     frames: u8,
 }
@@ -264,6 +287,10 @@ fn adopt_work_plane(app: &mut SolveApp, sel: Sel) {
 /// The work plane in the world, where Show Work Plane draws its grid (none while a sketch is
 /// open: the sketch has its own).
 pub fn shown_work_plane(app: &SolveApp) -> Option<Plane> {
+    // The MODIFY tools pick their points on the work plane: its grid shows while one runs.
+    if app.cad.objects && app.session.active_sketch.is_none() && app.cad.plane.is_some() {
+        return app.cad.plane;
+    }
     if !app.forms.show_work_plane || app.session.active_sketch.is_some() {
         return None;
     }
@@ -369,7 +396,11 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     app.dialog = None;
     app.tool = None;
     let _ = app.session.execute("select.clear", &json!({}));
-    app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None });
+    let name = next_object_name(app, form.label(void));
+    if form != Form::Reference {
+        app.shell_ui.properties = true;
+    }
+    app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None, name, pending: Pending::default() });
     if form == Form::Reference {
         // A reference plane is drawn on a plane square to the view, through its centre: the
         // camera stays where it is, the grid faces the screen, and the plane made from the
@@ -431,10 +462,11 @@ fn work_plane_ref(app: &SolveApp) -> Option<(Value, Vec3)> {
             let plane = crate::viewport::named_plane(app, &name)?;
             Some((json!(name), plane.normal()))
         }
-        sel @ Sel::Face { .. } => {
-            let Sel::Face { body, index, .. } = &sel else { return None };
-            let (_, normal) = crate::dialogs::planar_face(&app.session, body, *index)?;
-            Some((crate::sketch_attachment_ui::face_plane(app, &sel)?, normal))
+        // A face is taken where it is now, as a plane of its own: the form never depends on the
+        // body it was drawn on (editing or deleting that body leaves the form as it is).
+        Sel::Face { .. } => {
+            let plane = work_plane_world(app)?;
+            Some((plane_json(&plane), plane.normal()))
         }
         _ => None,
     }
@@ -444,8 +476,9 @@ fn work_plane_ref(app: &SolveApp) -> Option<(Value, Vec3)> {
 /// projected into it: only what is drawn is the user's.
 fn open_on(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     let Sel::Face { point, .. } = sel else { return crate::dialogs::start_sketch(app, sel) };
-    let plane = crate::sketch_attachment_ui::face_plane(app, sel).ok_or("the face no longer exists")?;
-    let params = json!({"plane": plane, "activate_part": app.preferences.sketch_face_activates_part, "project_edges": false});
+    // Where the face is now, as a plane of its own: the form does not hang on the body under it.
+    let plane = work_plane_world(app).ok_or("the face no longer exists")?;
+    let params = json!({"plane": plane_json(&plane), "project_edges": false});
     let before = app.settled_cam();
     app.run("sketch.create", params).map_err(|e| crate::friendly_error("sketch.create", &e))?;
     if app.look_at_opened_sketch(before)
@@ -466,6 +499,12 @@ fn opened_sketch(app: &mut SolveApp, look: bool) {
     }
     if let (Some(id), Some(s)) = (app.session.active_sketch, app.forms.session.as_mut()) {
         s.sketches.push(id);
+    }
+    // The sketch is named after the object it makes: `Extrusion 1`, `Sweep 1 · Path`.
+    if let (Some(id), Some(s)) = (app.session.active_sketch, app.forms.session.as_ref())
+        && let Some(name) = sketch_name(s, s.sketches.len().saturating_sub(1))
+    {
+        let _ = app.session.execute("timeline.rename", &json!({"feature": id, "name": name}));
     }
     app.ui.tab = "SKETCH".into();
     app.forms.open_ends.clear();
@@ -504,7 +543,7 @@ fn drawn_centre(app: &SolveApp, sketch: u64) -> Option<Vec3> {
     let (mut sum, mut n) = (Vec2::ZERO, 0.0);
     for i in drawn_curves(ss) {
         for p in ss.sketch.polyline(i) {
-            sum = sum + p;
+            sum += p;
             n += 1.0;
         }
     }
@@ -522,6 +561,15 @@ pub fn intercept_finish(app: &mut SolveApp) -> bool {
     let Some(session) = app.forms.session.clone() else { return false };
     let Some(active) = app.session.active_sketch else { return false };
     if session.sketches.last() != Some(&active) {
+        if session.sketches.contains(&active) {
+            // An earlier sketch of the form, opened again from Properties: back to the one
+            // being drawn.
+            let label = session.form.label(session.void);
+            if let Err(why) = resume(app, session, active) {
+                status(app, format!("{label}: {why}"), true);
+            }
+            return true;
+        }
         // Another sketch (opened some other way): not the form's.
         app.forms.session = None;
         return false;
@@ -791,7 +839,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             let profiles = closed(app)?;
             app.forms.session = None;
             leave(app, "sketch.finish");
-            open_feature(app, "solid.extrude", vec![(0, profile_sels(active, &profiles))], session.void);
+            open_feature(app, "solid.extrude", vec![(0, profile_sels(active, &profiles))], &session);
         }
         (Form::Revolve, _) => {
             let profiles = closed(app)?;
@@ -799,11 +847,15 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             app.forms.session = None;
             leave(app, "sketch.finish");
             let axis = crate::selection::curve_pick(&axis, active, app.session.active_sketch);
-            open_feature(app, "solid.revolve", vec![(0, profile_sels(active, &profiles)), (1, vec![axis])], session.void);
+            open_feature(app, "solid.revolve", vec![(0, profile_sels(active, &profiles)), (1, vec![axis])], &session);
         }
         (Form::Blend, 1) => {
             closed(app)?;
-            let depth = (drawn_size(app, active) / 5.0).round().max(2.0) * 5.0;
+            let depth = match plain_mm(&session.pending.distance) {
+                Some(d) if d > 0.0 => d,
+                _ => (drawn_size(app, active) / 5.0).round().max(2.0) * 5.0,
+            };
+            session.pending.distance = format!("{depth} mm");
             let st = crate::open_meshing::session_world(&app.session);
             let base = st.sketch(active).map(|ss| ss.plane).ok_or("the sketch is gone")?;
             drop(st);
@@ -816,13 +868,11 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             let focus = drawn_centre(app, active).map(|c| c + base.normal() * depth);
             let tied = work_plane_ref(app).map(|(plane, normal)| {
                 let sign = if normal.dot(base.normal()) < 0.0 { -1.0 } else { 1.0 };
-                json!({"plane": plane, "offset": format!("{} mm", sign * depth), "name": "Blend Top", "project_edges": false})
+                json!({"plane": plane, "offset": format!("{} mm", sign * depth), "project_edges": false})
             });
             let opened = match tied {
-                Some(params) => {
-                    open_next(app, params, focus).or_else(|_| open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus))
-                }
-                None => open_next(app, json!({"plane": plane_json(&top), "name": "Blend Top"}), focus),
+                Some(params) => open_next(app, params, focus).or_else(|_| open_next(app, json!({"plane": plane_json(&top)}), focus)),
+                None => open_next(app, json!({"plane": plane_json(&top)}), focus),
             };
             opened.inspect_err(|_| abort(app, true))?;
             status(app, format!("Blend: draw the top loop ({depth} mm above the base), then Finish"), false);
@@ -835,7 +885,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             leave(app, "sketch.finish");
             let mut sections = profile_sels(base, &bottom);
             sections.extend(profile_sels(active, &top));
-            open_feature(app, "solid.loft", vec![(0, sections)], session.void);
+            open_feature(app, "solid.loft", vec![(0, sections)], &session);
         }
         (Form::Sweep | Form::SweptBlend, 1) => {
             let path = path_of(app, active)?;
@@ -843,7 +893,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             session.path = Some(path);
             leave(app, "sketch.finish");
             app.forms.session = Some(session.clone());
-            open_next(app, json!({"plane": plane_json(&start), "name": "Profile"}), Some(start.origin)).inspect_err(|_| abort(app, true))?;
+            open_next(app, json!({"plane": plane_json(&start)}), Some(start.origin)).inspect_err(|_| abort(app, true))?;
             let what = if session.form == Form::Sweep { "the profile" } else { "the first profile" };
             status(app, format!("{}: draw {what} (a closed loop across the path's start), then Finish", session.form.label(session.void)), false);
         }
@@ -853,14 +903,14 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             app.forms.session = None;
             leave(app, "sketch.finish");
             let curves = path.curves.iter().map(|id| crate::selection::curve_pick(id, path.sketch, app.session.active_sketch)).collect();
-            open_feature(app, "solid.sweep", vec![(0, profile_sels(active, &profiles)), (1, curves)], session.void);
+            open_feature(app, "solid.sweep", vec![(0, profile_sels(active, &profiles)), (1, curves)], &session);
         }
         (Form::SweptBlend, 2) => {
             closed(app)?;
             let end = session.path.as_ref().map(|p| p.end).ok_or("the path is gone")?;
             leave(app, "sketch.finish");
             app.forms.session = Some(session.clone());
-            open_next(app, json!({"plane": plane_json(&end), "name": "Profile 2"}), Some(end.origin)).inspect_err(|_| abort(app, true))?;
+            open_next(app, json!({"plane": plane_json(&end)}), Some(end.origin)).inspect_err(|_| abort(app, true))?;
             status(app, format!("{}: draw the second profile (across the path's end), then Finish", session.form.label(session.void)), false);
         }
         (Form::SweptBlend, _) => {
@@ -871,7 +921,7 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             leave(app, "sketch.finish");
             let mut sections = profile_sels(first_sketch, &first);
             sections.extend(profile_sels(active, &second));
-            open_feature(app, "solid.loft", vec![(0, sections)], session.void);
+            open_feature(app, "solid.loft", vec![(0, sections)], &session);
         }
     }
     Ok(())
@@ -889,8 +939,9 @@ fn revolve_axis(app: &SolveApp, sketch: u64) -> Option<String> {
 }
 
 /// Open feature `command`'s window and fill its inputs; a void cuts.
-fn open_feature(app: &mut SolveApp, command: &'static str, inputs: Vec<(usize, Vec<Sel>)>, void: bool) {
-    app.forms.fill = Some(Fill { command, inputs, void, frames: 30 });
+fn open_feature(app: &mut SolveApp, command: &'static str, inputs: Vec<(usize, Vec<Sel>)>, session: &FormSession) {
+    let (void, name, pending) = (session.void, session.name.clone(), session.pending.clone());
+    app.forms.fill = Some(Fill { command, inputs, void, name, pending, frames: 30 });
     if app.session.active_sketch.is_none() && app.deferred.is_none() {
         app.start(command);
         apply_fill(app);
@@ -916,32 +967,217 @@ fn apply_fill(app: &mut SolveApp) -> bool {
         }
     }
     d.active = d.inputs.iter().position(|i| i.items.is_empty()).unwrap_or(0);
-    // A form is an object of its own: solids never join others by themselves (MODIFY ▸ Join does).
-    if !fill.void {
-        match &mut d.kind {
-            Kind::Extrude { operation, auto_op, .. } => {
-                *operation = 0;
-                *auto_op = false;
+    // A form is an object of its own: it never joins others by itself (MODIFY ▸ Join does); a
+    // void cuts. Either way the object is one body, whatever its sketch's loops or the cut.
+    let op = if fill.void { 2 } else { 0 };
+    let p = &fill.pending;
+    match &mut d.kind {
+        Kind::Extrude { operation, auto_op, distance, start, .. } => {
+            *operation = op;
+            *auto_op = false;
+            let (s0, s1) = (plain_mm(&p.start).unwrap_or(0.0), plain_mm(&p.end));
+            match s1 {
+                Some(e) if (e - s0).abs() > 1e-9 => *distance = format!("{} mm", round6(e - s0)),
+                Some(_) => {}
+                None => *distance = p.end.clone(),
             }
-            Kind::Revolve { operation, .. } | Kind::Loft { operation, .. } | Kind::Sweep { operation, .. } => *operation = 0,
-            _ => {}
+            if s0 != 0.0 {
+                *start = format!("{} mm", round6(s0));
+            }
         }
+        Kind::Revolve { operation, angle, .. } => {
+            *operation = op;
+            *angle = p.angle.clone();
+        }
+        Kind::Loft { operation, .. } | Kind::Sweep { operation, .. } => *operation = op,
+        _ => {}
     }
-    if fill.void {
-        match &mut d.kind {
-            Kind::Extrude { operation, auto_op, .. } => {
-                *operation = 2;
-                *auto_op = false;
-            }
-            Kind::Revolve { operation, .. } | Kind::Loft { operation, .. } | Kind::Sweep { operation, .. } => *operation = 2,
-            _ => {}
-        }
+    d.extra.insert("touching".into(), json!("one_body"));
+    if !fill.void {
+        d.extra.insert("body_name".into(), json!(fill.name));
+        d.extra.insert("name".into(), json!(fill.name));
+    } else {
+        d.extra.insert("name".into(), json!(fill.name));
     }
     app.forms.fill = None;
     // The feature's window opened from the MODEL tab: the ribbon stays there.
     app.ui.tab = "MODEL".into();
-    let text = if fill.void { "set the sizes, then OK cuts the void" } else { "set the sizes, then OK makes the form" };
-    status(app, text, false);
+    // Made at once, with the values set in Properties; changed there afterwards.
+    let Some(dialog) = app.dialog.take() else { return true };
+    let commands = crate::dialogs::apply_commands(app, &dialog);
+    let made = commands.and_then(|cmds| {
+        for (cmd, params) in cmds {
+            app.run(&cmd, params)?;
+        }
+        Ok(())
+    });
+    match made {
+        Ok(()) => {
+            if !fill.void && app.session.model.state().body(&fill.name).is_some() {
+                let _ = app.run("select.set", json!({"items": [{"type": "body", "name": fill.name}]}));
+            }
+            app.shell_ui.properties = true;
+            let text = if fill.void {
+                format!("{} cut; change it in Properties", fill.name)
+            } else {
+                format!("{} made; change it in Properties", fill.name)
+            };
+            status(app, text, false);
+        }
+        Err(e) => {
+            // Back to the window, to fix what failed.
+            app.dialog = Some(dialog);
+            status(app, format!("{}: {e}", fill.name), true);
+        }
+    }
+    true
+}
+
+fn round6(v: f64) -> f64 {
+    (v * 1e6).round() / 1e6
+}
+
+/// A length expression's value in mm when it is a plain number, with or without `mm`.
+pub(crate) fn plain_mm(e: &str) -> Option<f64> {
+    e.trim().trim_end_matches("mm").trim().parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// The next free name for an object made by `tool`: `Extrusion 1`, `Extrusion 2`…
+fn next_object_name(app: &SolveApp, tool: &str) -> String {
+    let st = app.session.model.state();
+    let taken = |n: &str| st.body(n).is_some() || app.session.doc.features.iter().any(|f| f.name == n || f.name.starts_with(&format!("{n} · ")));
+    (1..10_000).map(|k| format!("{tool} {k}")).find(|n| !taken(n)).unwrap_or_else(|| tool.to_string())
+}
+
+/// A form's `index`th sketch's name: the object's, and what it is for when there are several.
+fn sketch_name(s: &FormSession, index: usize) -> Option<String> {
+    let part = match (s.form, index) {
+        (Form::Extrusion | Form::Revolve, _) | (Form::ModelLine, _) => None,
+        (Form::Reference, _) => return None,
+        (Form::Blend, 0) => Some("Base"),
+        (Form::Blend, _) => Some("Top"),
+        (Form::Sweep | Form::SweptBlend, 0) => Some("Path"),
+        (Form::Sweep, _) => Some("Profile"),
+        (Form::SweptBlend, 1) => Some("Profile 1"),
+        (Form::SweptBlend, _) => Some("Profile 2"),
+    };
+    Some(match part {
+        Some(p) => format!("{} · {p}", s.name),
+        None => s.name.clone(),
+    })
+}
+
+/// The labels of a form's sketches, in order (made or still to come).
+fn stage_labels(form: Form) -> &'static [&'static str] {
+    match form {
+        Form::Blend => &["Base", "Top"],
+        Form::Sweep => &["Path", "Profile"],
+        Form::SweptBlend => &["Path", "Profile 1", "Profile 2"],
+        _ => &["Sketch"],
+    }
+}
+
+/// An earlier sketch of the form was finished after being opened again: the path is read again
+/// (a Sweep's profiles stay where they were drawn) and the sketch being drawn opens again.
+fn resume(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(), String> {
+    if session.path.as_ref().is_some_and(|p| p.sketch == active) {
+        session.path = Some(path_of(app, active)?);
+    }
+    leave(app, "sketch.finish");
+    let last = *session.sketches.last().ok_or("the form has no sketch")?;
+    app.forms.session = Some(session);
+    reopen(app, last)
+}
+
+fn reopen(app: &mut SolveApp, sketch: u64) -> Result<(), String> {
+    app.forms.leaving = true;
+    app.edit_feature(sketch);
+    app.forms.leaving = false;
+    if app.session.active_sketch != Some(sketch) {
+        return Err("the sketch could not be opened".into());
+    }
+    app.ui.tab = "SKETCH".into();
+    Ok(())
+}
+
+/// Properties while a form is drawn: its name, its sketches (open any made so far, and come
+/// back), and its values.
+pub fn properties_ui(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
+    let Some(session) = app.forms.session.clone() else { return false };
+    if session.form == Form::Reference {
+        return false;
+    }
+    let active = app.session.active_sketch;
+    ui.label(egui::RichText::new(&session.name).strong());
+    ui.label(egui::RichText::new(if session.void { "Void (cuts what it meets)" } else { "One object" }).small().weak());
+    ui.add_space(4.0);
+    let labels = stage_labels(session.form);
+    let mut open: Option<u64> = None;
+    if session.form != Form::ModelLine && labels.len() > 1 {
+        ui.label("Sketches");
+        ui.horizontal_wrapped(|ui| {
+            for (i, label) in labels.iter().enumerate() {
+                let made = session.sketches.get(i).copied();
+                let current = made.is_some() && made == active;
+                let r = ui.add_enabled(made.is_some() && !current, egui::Button::new(*label).selected(current));
+                crate::scenario::publish_target(&format!("form:stage:{label}"), r.rect);
+                if r.clicked() {
+                    open = made;
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+    let mut pending = session.pending.clone();
+    let mut changed = false;
+    egui::Grid::new("sc_form_values").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+        let mut field = |ui: &mut egui::Ui, label: &str, value: &mut String| {
+            ui.label(label);
+            let r = ui.add(egui::TextEdit::singleline(value).desired_width(120.0));
+            crate::scenario::publish_target(&format!("form:{label}"), r.rect);
+            changed |= r.changed();
+            ui.end_row();
+        };
+        match session.form {
+            Form::Extrusion => {
+                field(ui, "Start", &mut pending.start);
+                field(ui, "End", &mut pending.end);
+            }
+            Form::Revolve => field(ui, "Angle", &mut pending.angle),
+            Form::Blend if session.sketches.len() <= 1 => {
+                if pending.distance.is_empty() {
+                    pending.distance = "auto".into();
+                }
+                field(ui, "Distance", &mut pending.distance);
+                if pending.distance == "auto" {
+                    pending.distance.clear();
+                }
+            }
+            _ => {}
+        }
+    });
+    if changed && let Some(s) = app.forms.session.as_mut() {
+        s.pending = pending;
+    }
+    ui.label(egui::RichText::new("Finish the sketch to go on; the object is made with these values.").small().weak());
+    if let Some(sketch) = open
+        && let Some(current) = active
+    {
+        // Leave the sketch being drawn as it is (no checks) and open the one asked for.
+        app.forms.leaving = true;
+        app.leave_sketch("sketch.finish");
+        app.forms.leaving = false;
+        // A path changed: the profiles still to come go across it as it is now.
+        if session.path.as_ref().is_some_and(|p| p.sketch == current)
+            && let Ok(path) = path_of(app, current)
+            && let Some(s) = app.forms.session.as_mut()
+        {
+            s.path = Some(path);
+        }
+        if let Err(e) = reopen(app, sketch) {
+            status(app, e, true);
+        }
+    }
     true
 }
 
@@ -1012,10 +1248,9 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         && session.form == Form::Reference
         && session.sketches.last() == Some(&active)
         && reference_line(app, active).is_some()
+        && let Err(why) = step(app, session, active)
     {
-        if let Err(why) = step(app, session, active) {
-            status(app, format!("Reference Plane: {why}"), true);
-        }
+        status(app, format!("Reference Plane: {why}"), true);
     }
     if let Some((sketch, feature, seen)) = app.forms.after_edit {
         if app.session.active_sketch == Some(sketch) {
@@ -1030,9 +1265,14 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             {
                 status(app, format!("The object keeps its old outline: {e}"), true);
             }
-            if app.session.doc.feature(feature).is_some() {
-                app.edit_feature(feature);
-                status(app, "The sketch is updated; change the depth (or angle) here, then OK", false);
+            // The object follows its sketch; its values are in Properties.
+            let st = crate::open_meshing::session_world(&app.session);
+            let body = st.bodies.iter().find(|b| b.feature == feature).map(|b| b.name.clone());
+            drop(st);
+            if let Some(body) = body {
+                let _ = app.run("select.set", json!({"items": [{"type": "body", "name": body}]}));
+                app.shell_ui.properties = true;
+                status(app, format!("{body} follows its sketch; change its values in Properties"), false);
             }
         } else if seen || app.session.doc.feature(feature).is_none() {
             app.forms.after_edit = None;
@@ -1050,7 +1290,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if !app.forms.leaving
         && let Some(session) = &app.forms.session
-        && session.sketches.last().is_some_and(|id| app.session.active_sketch != Some(*id))
+        && session.sketches.last().is_some_and(|_| app.session.active_sketch.is_none_or(|a| !session.sketches.contains(&a)))
     {
         let label = session.form.label(session.void);
         app.forms.session = None;

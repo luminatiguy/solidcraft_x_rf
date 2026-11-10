@@ -104,7 +104,8 @@ fn a_contour_left_open_cannot_be_finished() {
     h.app.finish_sketch();
     h.frames(3);
     assert!(h.app.session.active_sketch.is_none());
-    assert!(h.app.dialog.as_ref().is_some_and(|d| matches!(d.kind, crate::dialogs::Kind::Extrude { .. })));
+    assert!(h.app.dialog.is_none(), "the form builds at once, its values in Properties");
+    assert!(h.app.session.doc.features.iter().any(|f| matches!(f.kind, solidcraft_engine::doc::FeatureKind::Extrude { .. })));
 }
 
 #[test]
@@ -391,4 +392,125 @@ fn design_move_copy_rotate_and_mirror_whole_objects() {
     feed(&mut h.app, pt(0.0, 10.0));
     feed(&mut h.app, Input::Enter);
     assert_eq!(crate::open_meshing::session_world(&h.app.session).bodies.len(), before + 1);
+}
+
+fn circle_arcs(h: &Harness) -> Vec<(Vec2, f64, f64, f64)> {
+    ents(h)
+        .into_iter()
+        .filter_map(|e| match e.shape {
+            Shape::Arc { c, r, a0, a1 } => Some((c, r, a0, a1)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A circle crossed by two lines: Trim takes the piece clicked, left or right (#b07: it took the
+/// same piece wherever the circle was picked).
+#[test]
+fn trim_takes_the_clicked_piece_of_a_circle() {
+    for (side, keep_x) in [(10.0, -10.0), (-10.0, 10.0)] {
+        let mut h = sketching();
+        feed(&mut h.app, Input::Enter);
+        tool(&mut h, "cad.circle");
+        feed(&mut h.app, pt(0.0, 0.0));
+        feed(&mut h.app, Input::Number(10.0));
+        for x in [-5.0, 5.0] {
+            tool(&mut h, "cad.line");
+            feed(&mut h.app, pt(x, -20.0));
+            feed(&mut h.app, pt(x, 20.0));
+            feed(&mut h.app, Input::Enter);
+        }
+        let circle = ents(&h).into_iter().find(|e| matches!(e.shape, Shape::Circle(..))).unwrap().id;
+        tool(&mut h, "cad.trim");
+        feed(&mut h.app, pick(&circle, side, 0.0));
+        feed(&mut h.app, Input::Enter);
+        let arcs = circle_arcs(&h);
+        assert_eq!(arcs.len(), 1, "{arcs:?}");
+        let (c, r, a0, a1) = arcs[0];
+        let pts = super::geo::arc_points(c, r, a0, a1);
+        assert!(pts.iter().all(|p| p.x * side.signum() < 5.0 + 1e-6), "the clicked side is gone: {pts:?}");
+        assert!(pts.iter().any(|p| (p.x - keep_x).abs() < 0.5), "the far side stays: {pts:?}");
+    }
+}
+
+/// Trim with a fence: two points across several curves trim each where the fence crosses it.
+#[test]
+fn trim_fence_trims_every_crossed_curve() {
+    let mut h = sketching();
+    feed(&mut h.app, Input::Enter);
+    // A long horizontal line and three verticals sticking out above it.
+    tool(&mut h, "cad.line");
+    feed(&mut h.app, pt(0.0, 0.0));
+    feed(&mut h.app, pt(30.0, 0.0));
+    feed(&mut h.app, Input::Enter);
+    for x in [5.0, 15.0, 25.0] {
+        tool(&mut h, "cad.line");
+        feed(&mut h.app, pt(x, -10.0));
+        feed(&mut h.app, pt(x, 10.0));
+        feed(&mut h.app, Input::Enter);
+    }
+    tool(&mut h, "cad.trim");
+    // Empty space starts the fence; it crosses the three upper halves.
+    feed(&mut h.app, pt(0.0, 5.0));
+    feed(&mut h.app, pt(30.0, 5.0));
+    feed(&mut h.app, Input::Enter);
+    let l = lines(&h);
+    assert!(!l.iter().any(|(a, b)| a.y > 1e-6 || b.y > 1e-6), "the parts above the base are gone: {l:?}");
+    assert_eq!(l.iter().filter(|(a, b)| (a.x - b.x).abs() < 1e-9).count(), 3, "{l:?}");
+}
+
+/// A pick prompt (Trim) is not snapped: a click near a circle's quadrant stays where it is.
+#[test]
+fn a_pick_is_not_snapped() {
+    assert!(super::Accept::PICK.pick && !super::Accept::POINT.pick);
+}
+
+/// Rectangle's other corner: the value boxes are its Length and Height, not a distance and angle.
+#[test]
+fn rectangle_value_boxes_are_length_and_height() {
+    let mut h = sketching();
+    feed(&mut h.app, Input::Enter);
+    tool(&mut h, "cad.rectang");
+    feed(&mut h.app, pt(1.0, 1.0));
+    let prompt = h.app.cad.run.as_ref().unwrap().m.prompt(&h.app);
+    let mut s = h.app.cad.settings.clone();
+    s.dyn_input = true;
+    s.dyn_polar = true;
+    s.dyn_relative = false;
+    let e = super::dyn_entry(&s, &prompt, "").unwrap();
+    assert!(!e.polar && e.relative && e.sides, "{e:?}");
+    assert_eq!(e.live(Vec2::new(21.0, 11.0)), (20.0, 10.0));
+}
+
+/// MODIFY's Move outside a sketch moves the picked bodies and reference planes alike, by the
+/// points picked in the world.
+#[test]
+fn object_move_takes_reference_planes_too() {
+    use serde_json::json;
+    let mut h = Harness::new();
+    h.app.session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
+    let pt3 = |x: f64, y: f64, z: f64| json!({"point": [x, y, z]});
+    h.app
+        .session
+        .execute(
+            "construct.plane.three_points",
+            &json!({"a": pt3(0.0, 0.0, 0.0), "b": pt3(1.0, 0.0, 0.0), "c": pt3(0.0, 0.0, 1.0), "name": "Reference Plane 1"}),
+        )
+        .unwrap();
+    let body = crate::open_meshing::session_world(&h.app.session).bodies.first().unwrap().name.clone();
+    let min_y = |h: &Harness| {
+        let st = crate::open_meshing::session_world(&h.app.session);
+        let b = st.bodies.iter().find(|b| b.name == body).unwrap();
+        let (m, place) = b.mesh_in_place();
+        m.positions.iter().map(|p| solidcraft_engine::doc::apply_point(&place, *p).y).fold(f64::INFINITY, f64::min)
+    };
+    let before = min_y(&h);
+    h.app.session.execute("select.set", &json!({"items": [{"type": "body", "name": body}, {"type": "plane", "name": "Reference Plane 1"}]})).unwrap();
+    tool(&mut h, "obj.move");
+    feed(&mut h.app, pt(0.0, 0.0));
+    feed(&mut h.app, pt(0.0, 5.0));
+    let planes = solidcraft_engine::view::construction_planes(&h.app.session);
+    let (_, _, pl) = planes.iter().find(|(_, n, _)| n == "Reference Plane 1").unwrap();
+    assert!((pl.origin.y - 5.0).abs() < 1e-6, "the plane moved 5 along Y: {pl:?}");
+    assert!((min_y(&h) - before - 5.0).abs() < 1e-6, "the body moved too: {} from {before}", min_y(&h));
 }

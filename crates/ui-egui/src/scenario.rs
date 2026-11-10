@@ -197,6 +197,10 @@ impl Harness {
             cam_mark: None,
         };
         WIDTHS.with(|m| m.borrow_mut().clear());
+        // The scenarios drive the feature timeline's chips; the command-list History has none.
+        h.app.preferences.history_commands = false;
+        // …and the browser's Features folder with every step.
+        h.app.preferences.browser_features_all = true;
         h.install();
         h.ctx.enable_accesskit();
         h.frames(3);

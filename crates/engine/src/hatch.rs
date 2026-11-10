@@ -200,7 +200,7 @@ pub fn resolve_face(mesh: &Mesh, h: &Hatch) -> Option<usize> {
 pub fn frame(tris: &[[Vec3; 3]]) -> Option<(Vec3, Vec3, Vec3)> {
     let mut n = Vec3::new(0.0, 0.0, 0.0);
     for t in tris {
-        n = n + (t[1] - t[0]).cross(t[2] - t[0]);
+        n += (t[1] - t[0]).cross(t[2] - t[0]);
     }
     let n = n.normalized()?;
     let z = Vec3::new(0.0, 0.0, 1.0);
@@ -377,8 +377,8 @@ impl Unroll {
                 }
             }
             area += w;
-            sum = sum + c;
-            centre = centre + (t[0] + t[1] + t[2]) * (w / 3.0);
+            sum += c;
+            centre += (t[0] + t[1] + t[2]) * (w / 3.0);
         }
         if !(area > 0.0) {
             return None;

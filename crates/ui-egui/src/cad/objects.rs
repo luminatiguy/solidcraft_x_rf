@@ -26,22 +26,36 @@ pub enum Op {
 enum Stage {
     Select,
     Base,
-    Second(Vec2),
+    /// The base point: on the work plane, and in the world (a snapped model corner may lie off
+    /// the plane).
+    Second(Vec2, V3),
     /// Mirror: erase the source objects?
-    Erase(Vec2, Vec2),
+    Erase(V3, V3),
 }
 
 pub struct ObjectTool {
     op: Op,
     stage: Stage,
     bodies: Vec<String>,
+    /// Reference planes picked with the bodies: they move, turn and mirror too.
+    planes: Vec<String>,
     /// Copy: copies made so far.
     copies: usize,
 }
 
 impl ObjectTool {
     pub fn new(op: Op) -> ObjectTool {
-        ObjectTool { op, stage: Stage::Select, bodies: Vec::new(), copies: 0 }
+        ObjectTool { op, stage: Stage::Select, bodies: Vec::new(), planes: Vec::new(), copies: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bodies.is_empty() && self.planes.is_empty()
+    }
+
+    fn select_all(&self, app: &mut SolveApp) {
+        let items: Vec<Sel> =
+            self.bodies.iter().map(|b| Sel::Body { name: b.clone() }).chain(self.planes.iter().map(|p| Sel::Plane { name: p.clone() })).collect();
+        let _ = app.session.execute("select.set", &json!({ "items": items }));
     }
 }
 
@@ -60,13 +74,58 @@ pub fn selected_bodies(app: &SolveApp) -> Vec<String> {
     out
 }
 
-/// The work plane, where the points are picked.
+/// The reference planes selected in the view.
+pub fn selected_planes(app: &SolveApp) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in &app.session.selection {
+        if let Sel::Plane { name } = s
+            && crate::reference_planes::is_reference(name)
+            && !out.contains(name)
+        {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
+/// The work plane, where the points are picked: the one set with Set Work Plane; with none set,
+/// in a two-axis view (Top, Front, Right…) the origin plane the view looks at, else XY.
 pub fn plane(app: &SolveApp) -> Plane {
+    if app.forms.work_plane.is_none() && app.cam.aligned_standard_view(1e-4).is_some_and(|v| v != solidcraft_engine::render::StandardView::Iso) {
+        let n = app.cam.back();
+        let name = if n.z.abs() >= n.x.abs() && n.z.abs() >= n.y.abs() {
+            "XY"
+        } else if n.y.abs() >= n.x.abs() {
+            "XZ"
+        } else {
+            "YZ"
+        };
+        if let Some(pl) = crate::viewport::named_plane(app, name) {
+            return pl;
+        }
+    }
     crate::forms::work_plane_world(app).unwrap_or(Plane::XY)
 }
 
-fn world(app: &SolveApp, p: Vec2) -> V3 {
-    plane(app).to_world(p)
+/// The work plane's name for the prompts.
+pub fn plane_name(app: &SolveApp) -> String {
+    match app.forms.work_plane.as_ref() {
+        Some(Sel::Plane { name }) => name.clone(),
+        Some(Sel::Face { .. }) => "face".to_string(),
+        _ => {
+            let pl = app.cad.plane.unwrap_or_else(|| plane(app));
+            let n = pl.normal();
+            if n.z.abs() > 0.999 {
+                "XY".into()
+            } else if n.y.abs() > 0.999 {
+                "XZ".into()
+            } else if n.x.abs() > 0.999 {
+                "YZ".into()
+            } else {
+                "work".into()
+            }
+        }
+    }
 }
 
 fn arr(v: V3) -> serde_json::Value {
@@ -79,47 +138,96 @@ fn rotated(v: V3, k: V3, angle: f64) -> V3 {
     v * c + k.cross(v) * s + k * (k.dot(v) * (1.0 - c))
 }
 
+/// `p` mirrored in the plane through `o` with unit normal `n`.
+fn reflected(p: V3, o: V3, n: V3) -> V3 {
+    p - n * (2.0 * (p - o).dot(n))
+}
+
+/// The point in the world the input stands for: the snapped model point when the input is the
+/// cursor, else the point on the work plane.
+fn world_of(app: &SolveApp, p: Vec2) -> V3 {
+    match (app.cad.world, app.cad.cursor) {
+        (Some(w), Some(c)) if c.dist(p) < 1e-9 => w,
+        _ => active_plane(app).to_world(p),
+    }
+}
+
+fn active_plane(app: &SolveApp) -> Plane {
+    app.cad.plane.unwrap_or_else(|| plane(app))
+}
+
 impl ObjectTool {
-    fn run_move(&mut self, app: &mut SolveApp, from: Vec2, to: Vec2, copy: bool) -> Result<(), String> {
-        let d = world(app, to) - world(app, from);
-        app.run("solid.move", json!({"bodies": self.bodies, "translate": arr(d), "copy": copy})).map(|_| ()).map_err(|e| e.to_string())
-    }
-
-    fn run_rotate(&mut self, app: &mut SolveApp, base: Vec2, degrees: f64) -> Result<(), String> {
-        let pl = plane(app);
-        let k = pl.normal();
-        let b = pl.to_world(base);
-        // Turned about the axis through the base point: R·p + (b − R·b).
-        let t = b - rotated(b, k, degrees.to_radians());
-        app.run("solid.move", json!({"bodies": self.bodies, "axis": arr(k), "angle": format!("{degrees} deg"), "translate": arr(t)}))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    fn run_mirror(&mut self, app: &mut SolveApp, a: Vec2, b: Vec2, erase: bool) -> Result<(), String> {
-        let pl = plane(app);
-        let (wa, wb) = (pl.to_world(a), pl.to_world(b));
-        let normal = pl.normal().cross(wb - wa);
-        if normal.len() < 1e-12 {
-            return Err("the mirror line has no length".into());
-        }
-        app.run("solid.mirror", json!({"bodies": self.bodies, "plane": {"origin": arr(wa), "normal": arr(normal)}})).map_err(|e| e.to_string())?;
-        if erase {
-            app.run("solid.remove", json!({"bodies": self.bodies})).map_err(|e| e.to_string())?;
+    /// Each picked reference plane moved by `f`: its three points through it, the plane defined
+    /// again in place (sketches on it follow), or a new plane for a copy.
+    fn move_planes(&self, app: &mut SolveApp, copy: bool, f: &dyn Fn(V3) -> V3) -> Result<(), String> {
+        let planes = solidcraft_engine::view::construction_planes(&app.session);
+        for name in &self.planes {
+            let Some((id, _, pl)) = planes.iter().find(|(_, n, _)| n == name) else { continue };
+            let pt = |v: V3| json!({ "point": arr(f(v)) });
+            let params = json!({"a": pt(pl.origin), "b": pt(pl.origin + pl.x), "c": pt(pl.origin + pl.y)});
+            if copy {
+                let count = planes.iter().filter(|(_, n, _)| crate::reference_planes::is_reference(n)).count() + 1 + self.copies;
+                let mut p = params;
+                if let Some(m) = p.as_object_mut() {
+                    m.insert("name".into(), json!(format!("{} {count}", crate::reference_planes::PREFIX)));
+                }
+                app.run("construct.plane.three_points", p).map_err(|e| e.to_string())?;
+            } else {
+                app.run("timeline.redefine", json!({"feature": id, "command": "construct.plane.three_points", "params": params}))
+                    .map_err(|e| e.to_string())?;
+            }
         }
         Ok(())
+    }
+
+    fn run_move(&mut self, app: &mut SolveApp, from: V3, to: V3, copy: bool) -> Result<(), String> {
+        let d = to - from;
+        if !self.bodies.is_empty() {
+            app.run("solid.move", json!({"bodies": self.bodies, "translate": arr(d), "copy": copy})).map_err(|e| e.to_string())?;
+        }
+        self.move_planes(app, copy, &|v| v + d)
+    }
+
+    fn run_rotate(&mut self, app: &mut SolveApp, base: V3, degrees: f64) -> Result<(), String> {
+        let k = active_plane(app).normal();
+        // Turned about the axis through the base point: R·p + (b − R·b).
+        let a = degrees.to_radians();
+        let t = base - rotated(base, k, a);
+        if !self.bodies.is_empty() {
+            app.run("solid.move", json!({"bodies": self.bodies, "axis": arr(k), "angle": format!("{degrees} deg"), "translate": arr(t)}))
+                .map_err(|e| e.to_string())?;
+        }
+        self.move_planes(app, false, &|v| base + rotated(v - base, k, a))
+    }
+
+    fn run_mirror(&mut self, app: &mut SolveApp, wa: V3, wb: V3, erase: bool) -> Result<(), String> {
+        let normal = active_plane(app).normal().cross(wb - wa);
+        let Some(n) = normal.normalized() else {
+            return Err("the mirror line has no length on the work plane".into());
+        };
+        if !self.bodies.is_empty() {
+            app.run("solid.mirror", json!({"bodies": self.bodies, "plane": {"origin": arr(wa), "normal": arr(normal)}}))
+                .map_err(|e| e.to_string())?;
+            if erase {
+                app.run("solid.remove", json!({"bodies": self.bodies})).map_err(|e| e.to_string())?;
+            }
+        }
+        // A reference plane mirrored is the same plane moved (keeping it is a copy).
+        self.move_planes(app, !erase, &|v| reflected(v, wa, n))
     }
 }
 
 impl Machine for ObjectTool {
-    fn prompt(&self, _app: &SolveApp) -> Prompt {
+    fn prompt(&self, app: &SolveApp) -> Prompt {
+        let on = plane_name(app);
         match self.stage {
-            Stage::Select => Prompt::new("Select objects", Accept::SELECT),
+            Stage::Select => Prompt::new("Select objects (bodies, reference planes), then Enter", Accept::SELECT),
             Stage::Base => match self.op {
-                Op::Mirror => Prompt::new("Specify first point of mirror line", Accept::POINT),
-                _ => Prompt::new("Specify base point", Accept::POINT),
+                Op::Mirror => Prompt::new(format!("Specify first point of mirror line (on the {on} plane)"), Accept::POINT),
+                Op::Rotate => Prompt::new(format!("Specify base point (turns about the {on} plane's normal)"), Accept::POINT),
+                _ => Prompt::new(format!("Specify base point (on the {on} plane or a snapped point)"), Accept::POINT),
             },
-            Stage::Second(b) => match self.op {
+            Stage::Second(b, _) => match self.op {
                 Op::Move | Op::Copy => Prompt::new("Specify second point", Accept::POINT).base(Some(b)),
                 Op::Rotate => Prompt::new("Specify rotation angle", Accept::POINT_OR_NUMBER).base(Some(b)),
                 Op::Mirror => Prompt::new("Specify second point of mirror line", Accept::POINT).base(Some(b)),
@@ -130,27 +238,33 @@ impl Machine for ObjectTool {
 
     fn begin(&mut self, app: &mut SolveApp) -> Res {
         self.bodies = selected_bodies(app);
-        if !self.bodies.is_empty() {
+        self.planes = selected_planes(app);
+        if !self.is_empty() {
             self.stage = Stage::Base;
         }
+        let on = plane_name(app);
+        app.set_status(format!("Points are picked on the {on} plane (Set Work Plane, or a Top/Front/Right view, changes it); snaps find the model's corners, middles and centres"), false);
         Ok(Step::Continue)
     }
 
     fn input(&mut self, app: &mut SolveApp, i: Input) -> Res {
         match (self.stage, i) {
             (Stage::Select, Input::Object(name)) => {
-                if let Some(at) = self.bodies.iter().position(|b| *b == name) {
-                    self.bodies.remove(at);
+                let list = if crate::reference_planes::is_reference(&name) && app.session.doc.find_feature(&name).is_some() {
+                    &mut self.planes
                 } else {
-                    self.bodies.push(name);
+                    &mut self.bodies
+                };
+                if let Some(at) = list.iter().position(|b| *b == name) {
+                    list.remove(at);
+                } else {
+                    list.push(name);
                 }
-                let _ = app
-                    .session
-                    .execute("select.set", &json!({"items": self.bodies.iter().map(|b| Sel::Body { name: b.clone() }).collect::<Vec<_>>()}));
+                self.select_all(app);
                 Ok(Step::Continue)
             }
             (Stage::Select, Input::Enter) => {
-                if self.bodies.is_empty() {
+                if self.is_empty() {
                     return Err("select an object first (click it), then Enter".into());
                 }
                 self.stage = Stage::Base;
@@ -158,41 +272,44 @@ impl Machine for ObjectTool {
             }
             (Stage::Select, _) => Ok(Step::Continue),
             (Stage::Base, Input::Point { p, .. }) => {
-                self.stage = Stage::Second(p);
+                self.stage = Stage::Second(p, world_of(app, p));
                 Ok(Step::Continue)
             }
             (Stage::Base, Input::Enter) => Ok(Step::Done),
-            (Stage::Second(b), Input::Point { p, .. }) => match self.op {
-                Op::Move => {
-                    self.run_move(app, b, p, false)?;
-                    Ok(Step::Done)
-                }
-                Op::Copy => {
-                    self.run_move(app, b, p, true)?;
-                    self.copies += 1;
-                    Ok(Step::Continue)
-                }
-                Op::Rotate => {
-                    let d = p - b;
-                    self.run_rotate(app, b, d.y.atan2(d.x).to_degrees())?;
-                    Ok(Step::Done)
-                }
-                Op::Mirror => {
-                    if p.dist(b) < 1e-9 {
-                        return Err("pick a second point away from the first".into());
+            (Stage::Second(b, wb), Input::Point { p, .. }) => {
+                let wp = world_of(app, p);
+                match self.op {
+                    Op::Move => {
+                        self.run_move(app, wb, wp, false)?;
+                        Ok(Step::Done)
                     }
-                    self.stage = Stage::Erase(b, p);
-                    Ok(Step::Continue)
+                    Op::Copy => {
+                        self.run_move(app, wb, wp, true)?;
+                        self.copies += 1;
+                        Ok(Step::Continue)
+                    }
+                    Op::Rotate => {
+                        let d = p - b;
+                        self.run_rotate(app, wb, d.y.atan2(d.x).to_degrees())?;
+                        Ok(Step::Done)
+                    }
+                    Op::Mirror => {
+                        if p.dist(b) < 1e-9 {
+                            return Err("pick a second point away from the first".into());
+                        }
+                        self.stage = Stage::Erase(wb, wp);
+                        Ok(Step::Continue)
+                    }
                 }
-            },
-            (Stage::Second(b), Input::Number(v)) => match self.op {
+            }
+            (Stage::Second(_, wb), Input::Number(v)) => match self.op {
                 Op::Rotate => {
-                    self.run_rotate(app, b, v)?;
+                    self.run_rotate(app, wb, v)?;
                     Ok(Step::Done)
                 }
                 _ => Ok(Step::Continue),
             },
-            (Stage::Second(_), Input::Enter) => Ok(Step::Done),
+            (Stage::Second(..), Input::Enter) => Ok(Step::Done),
             (Stage::Erase(a, b), Input::Keyword(k)) => {
                 self.run_mirror(app, a, b, k == "Yes")?;
                 Ok(Step::Done)
@@ -205,10 +322,10 @@ impl Machine for ObjectTool {
         }
     }
 
-    fn preview(&self, _app: &SolveApp, cursor: Vec2) -> Vec<Prev> {
+    fn preview(&self, app: &SolveApp, cursor: Vec2) -> Vec<Prev> {
         match self.stage {
-            Stage::Second(b) => vec![Prev::Line(vec![b, cursor])],
-            Stage::Erase(a, b) => vec![Prev::Line(vec![a, b])],
+            Stage::Second(_, wb) => vec![Prev::World(vec![wb, world_of(app, cursor)])],
+            Stage::Erase(a, b) => vec![Prev::World(vec![a, b])],
             _ => Vec::new(),
         }
     }

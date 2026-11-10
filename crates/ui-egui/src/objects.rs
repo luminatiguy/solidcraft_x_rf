@@ -63,6 +63,18 @@ fn open_combine(app: &mut SolveApp, operation: usize, keep: bool) {
 /// Swept Blend; a Sweep's path). The form follows the sketch when it is finished. False when the
 /// object was not made from a sketch.
 pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
+    edit_object_sketch(app, body, None)
+}
+
+/// [`edit_object`] with the sketch to open (one of the object's; `None`: its first).
+pub fn edit_object_sketch(app: &mut SolveApp, body: &str, which: Option<u64>) -> bool {
+    // An open sketch is finished first (switching between an object's sketches).
+    if app.session.active_sketch.is_some() {
+        app.finish_sketch();
+        if app.session.active_sketch.is_some() {
+            return false;
+        }
+    }
     let st = crate::open_meshing::session_world(&app.session);
     let Some(b) = st.body(body) else { return false };
     let Some(f) = app.session.doc.feature(b.feature) else { return false };
@@ -75,6 +87,7 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
         _ => None,
     };
     drop(st);
+    let sketch = which.or(sketch);
     let Some(sketch) = sketch else { return false };
     // While the sketch changes, the object takes every closed region, so removing a loop (a
     // hole) doesn't break it; its regions are chosen again when the sketch is finished.
@@ -83,7 +96,8 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
     }
     app.edit_feature(sketch);
     app.forms.after_edit = reopen.then_some((sketch, feature, false));
-    app.set_status("Editing the object's sketch: change it, then Finish; the depth comes next", false);
+    app.shell_ui.properties = true;
+    app.set_status("Editing the object's sketch: change it, then Finish (its values are in Properties)", false);
     true
 }
 

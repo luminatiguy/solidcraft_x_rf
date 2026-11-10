@@ -3064,6 +3064,13 @@ fn apply_traced_with(
         if op == Operation::Cut || op == Operation::Intersect {
             return Err(empty_boolean_targets(doc, state, f, &tools, targets.is_empty()));
         }
+        // One body asked for: the feature's pieces (a sketch's several profiles) are one body.
+        let tools = if f.touching == crate::Touching::OneBody && tools.len() > 1 {
+            let operands: Vec<&Traced> = tools.iter().collect();
+            vec![union_all(&operands)?]
+        } else {
+            tools
+        };
         for (k, t) in tools.into_iter().enumerate() {
             let name = new_name(state, f, k);
             state.bodies.push(ModelBody::traced_new(name, t, f.id));
@@ -3199,7 +3206,8 @@ fn apply_traced_with(
                     continue;
                 };
                 let pieces = mb.body.lumps().unwrap_or_else(|_| vec![mb.body.clone()]);
-                if pieces.len() <= had {
+                // One body asked for: a cut never splits its targets.
+                if pieces.len() <= had || f.touching == crate::Touching::OneBody {
                     split.push(mb);
                     continue;
                 }
