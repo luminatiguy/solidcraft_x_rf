@@ -1906,12 +1906,20 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 {
                     reveal_tooltip(app, ui, whole, command, egui::RectAlign::BOTTOM_START);
                 }
-                let icon = if selected.id == "sketch.finish" { "finish" } else { info.icon };
+                // Not the object's last sketch: Finish is Next, an arrow.
+                let next = selected.id == "sketch.finish" && crate::forms::finish_is_next(app);
+                let icon = if next {
+                    "next_stage"
+                } else if selected.id == "sketch.finish" {
+                    "finish"
+                } else {
+                    info.icon
+                };
                 let side = if finish { 30.0 } else { 26.0 };
                 let icon_rect =
                     Rect::from_center_size(pos2(br.center().x, whole.top() + if labels { 16.0 } else { button_height / 2.0 }), vec2(side, side));
                 icons::paint_icon(&painter, icon_rect, icon, if info.enabled { 1.0 } else { 0.35 });
-                let tr_label = app.tr_label(info.label).to_string();
+                let tr_label = if next { "Next".to_string() } else { app.tr_label(info.label).to_string() };
                 if !persistent {
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled() && info.enabled, &tr_label));
                 }
@@ -1972,7 +1980,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     });
                 } else if labels {
                     let button_label = crate::workspace::ribbon_button_label(selected);
-                    let label = app.tr_label(if button_label == selected.label { info.label } else { button_label });
+                    let label = if next { "Next" } else { app.tr_label(if button_label == selected.label { info.label } else { button_label }) };
                     let color = if info.enabled { t.text } else { t.text_dim };
                     let galley = ribbon_button_galley(&painter, label, whole.width() - BUTTON_LABEL_PADDING, color);
                     painter.galley(pos2(whole.center().x, ribbon_label_top(whole, galley.size().y)), galley, t.text);

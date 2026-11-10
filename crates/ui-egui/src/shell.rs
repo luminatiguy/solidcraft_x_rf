@@ -99,6 +99,8 @@ pub(crate) struct State {
     /// Actual floating workspace surfaces and their optional canvas reservation.
     pub workspace_panels: std::collections::BTreeMap<&'static str, (Rect, Option<crate::ui_kit::Edge>)>,
     pub browser: Option<Rect>,
+    /// Properties docked in the right column, this frame.
+    pub properties: Option<Rect>,
     /// The browser set to reveal on hover is out of sight this frame (#8692); its place stays
     /// in `browser`, which the pointer reveals.
     pub browser_hidden: bool,
@@ -171,6 +173,7 @@ fn occluding_rects(app: &SolveApp, fitting: bool) -> Vec<Rect> {
         rects.extend(app.shell.history.map(|card| crate::ui_kit::HistorySeam::new(card).pill));
     }
     rects.extend(app.shell.browser.filter(|_| app.ui.show_browser));
+    rects.extend(app.shell.properties.filter(|_| app.shell_ui.properties));
     rects.extend(app.viewport.palette_rect.filter(|_| app.session.active_sketch.is_some()));
     rects.extend(app.viewport.dialog_rect.filter(|_| app.dialog.is_some() || app.tree.redefine.is_some()));
     rects.extend(crate::view_confirm::rect(app));

@@ -1269,6 +1269,8 @@ preference_settings! {
     /// `dark`, `light` or `system` (follow the operating system), or a theme file's id: a
     /// built-in one (`gruvbox-dark`, …) or one of `custom_themes` (#2255).
     theme: String = "dark".into(), PAGE_APPEARANCE;
+    /// Windows, panels and buttons have rounded corners. Off: square corners everywhere.
+    rounded_corners: bool = true, PAGE_APPEARANCE;
     /// The 3D view's colours: the theme's own, or the Light or Dark theme's whatever the window
     /// uses (#4146).
     viewport_theme: crate::theme::ViewportTheme = crate::theme::ViewportTheme::Theme, PAGE_APPEARANCE;
@@ -1374,6 +1376,15 @@ preference_settings! {
     /// Width of the browser sidebar, which
     /// the user drags wider or narrower at its right edge.
     browser_width: f32 = DEFAULT_BROWSER_WIDTH, PAGE_LAYOUT;
+    /// Docked panels (Browser, History, the right column) limit the model's space instead of
+    /// lying over it. Off: the model is drawn under them, as before.
+    panels_limit_view: bool = true, PAGE_LAYOUT;
+    /// Properties is docked in the right column (off: a floating window).
+    properties_docked: bool = true, PAGE_LAYOUT;
+    /// The right column's width (Properties, the sketch's panel).
+    right_column_width: f32 = 300.0, PAGE_LAYOUT;
+    /// The Drawing workspace's settings panel width (dragged at its edge).
+    drawing_panel_width: f32 = 280.0, PAGE_LAYOUT;
     /// Render shell preference, independent of the document and Design history.
     render_shots_strip: bool = true;
     render_inspector_side: String = "right".into();

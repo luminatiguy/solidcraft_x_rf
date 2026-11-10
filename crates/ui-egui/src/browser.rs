@@ -24,6 +24,7 @@ mod occurrence_gizmo_tests;
 mod model;
 
 pub(crate) mod features;
+pub(crate) mod hatches;
 mod point_clouds;
 pub use point_clouds::CloudPanel;
 pub(crate) use point_clouds::point_cloud_tracks;
@@ -1744,6 +1745,9 @@ fn component_rows_inner(
     }
     if !render {
         features::rows(app, ui, id, &[], d, acts);
+    }
+    if id == 0 && !render {
+        hatches::rows(app, ui, d, acts);
     }
     if id == 0 && !render {
         crate::dialogs_assembly::browser_joints(app, ui, d);

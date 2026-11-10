@@ -11,6 +11,7 @@
 use serde_json::{Value, json};
 use solidcore_record::{Plane, Vec2, Vec3};
 use solidcraft_engine::Sel;
+use solidcraft_engine::doc::FeatureKind;
 use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
@@ -105,6 +106,8 @@ struct FormSession {
     name: String,
     /// The form's values, set in Properties while it is drawn (see [`Pending`]).
     pending: Pending,
+    /// A Revolve's axis stage: its sketch's curves before it (a line drawn now is the axis).
+    axis_before: Option<Vec<String>>,
 }
 
 /// What a form makes, set in Properties before it is made: an Extrusion's Start and End, a
@@ -127,6 +130,8 @@ impl Default for Pending {
 /// A feature window to fill once it is open.
 #[derive(Clone, Debug)]
 struct Fill {
+    /// The form, to open its last sketch again when the object cannot be made.
+    session: FormSession,
     command: &'static str,
     inputs: Vec<(usize, Vec<Sel>)>,
     void: bool,
@@ -145,6 +150,8 @@ pub struct State {
     pub show_work_plane: bool,
     /// Show Reference Planes: those not seen edge-on show as outlines.
     pub show_references: bool,
+    /// Show Void Forms: the shapes the voids cut away, to edit by a double click.
+    pub show_voids: bool,
     /// Set Work Plane waits for a plane or face to be picked.
     pub picking_work_plane: bool,
     /// Orient to a plane (the view cube's menu) waits for a plane or flat face.
@@ -160,6 +167,23 @@ pub struct State {
     /// An object's sketch opened by a double click: (sketch, the feature made from it, the
     /// sketch was seen open). Finishing it opens the feature's window (the depth, the angle).
     pub after_edit: Option<(u64, u64, bool)>,
+    /// An object's sketches edited again in turn: Finish on each but the last is Next.
+    pub chain: Option<Chain>,
+}
+
+/// An object's sketches edited again, in the order they were made: Finish (Next) on one opens
+/// the next; on the last it rebuilds the object, or, when it cannot be made, stays open.
+#[derive(Clone, Debug)]
+pub struct Chain {
+    pub feature: u64,
+    pub body: String,
+    /// (sketch, what it is): a Revolve's sketch comes twice, its profile, then its axis.
+    pub stages: Vec<(u64, String)>,
+    pub index: usize,
+    /// Properties asked for this stage instead of the next.
+    pub jump: Option<usize>,
+    /// The axis stage: the sketch's curves before it.
+    pub axis_before: Option<Vec<String>>,
 }
 
 const XY: &str = "XY";
@@ -186,6 +210,14 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
             .count();
         let text =
             if app.forms.show_references { format!("Reference planes shown ({n})") } else { "Reference planes shown only edge-on".to_string() };
+        status(app, text, false);
+        return true;
+    }
+    if id == "workplane.show_voids" {
+        app.forms.show_voids = !app.forms.show_voids;
+        let n = crate::void_forms::voids(app).len();
+        let text =
+            if app.forms.show_voids { format!("Void forms shown ({n}); double-click one to edit it") } else { "Void forms hidden".to_string() };
         status(app, text, false);
         return true;
     }
@@ -226,6 +258,9 @@ pub fn pressed(app: &SolveApp, id: &str) -> bool {
     }
     if id == "workplane.show_references" {
         return app.forms.show_references;
+    }
+    if id == "workplane.show_voids" {
+        return app.forms.show_voids;
     }
     if id == "workplane.set" {
         return app.forms.picking_work_plane;
@@ -400,7 +435,8 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     if form != Form::Reference {
         app.shell_ui.properties = true;
     }
-    app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None, name, pending: Pending::default() });
+    app.forms.chain = None;
+    app.forms.session = Some(FormSession { form, void, sketches: Vec::new(), path: None, name, pending: Pending::default(), axis_before: None });
     if form == Form::Reference {
         // A reference plane is drawn on a plane square to the view, through its centre: the
         // camera stays where it is, the grid faces the screen, and the plane made from the
@@ -421,7 +457,7 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
         app.cam_anim = None;
         app.cam = cam;
         opened_sketch(app, false);
-        status(app, "Reference Plane: draw one line (snaps work): the plane goes through it, square to the view", false);
+        status(app, "Reference Plane: draw one line (snaps work), then Finish: the plane goes through it, square to the view", false);
         return;
     }
     let plane = app.forms.work_plane.clone().unwrap_or_else(|| Sel::Plane { name: XY.into() });
@@ -445,7 +481,7 @@ fn start_form(app: &mut SolveApp, form: Form, void: bool) {
     let hint = match form {
         Form::Extrusion => "draw one or more closed loops (a loop inside another makes a hole), then Finish",
         Form::Blend => "draw the base loop, then Finish; the top loop comes next",
-        Form::Revolve => "draw closed loops and the axis as a Centerline, then Finish",
+        Form::Revolve => "draw closed loops, then Next; the axis line comes next",
         Form::Sweep => "draw the path (lines and arcs end to end), then Finish; the profile comes next",
         Form::SweptBlend => "draw the path (lines and arcs end to end), then Finish; a profile at each end comes next",
         Form::ModelLine => "draw lines on the work plane, then Finish",
@@ -558,6 +594,14 @@ pub fn intercept_finish(app: &mut SolveApp) -> bool {
     if app.forms.leaving {
         return false;
     }
+    if let Some(chain) = app.forms.chain.clone()
+        && app.session.active_sketch.is_some_and(|a| chain.stages.get(chain.index).is_some_and(|(id, _)| *id == a))
+    {
+        if let Err(why) = chain_step(app, chain) {
+            status(app, why, true);
+        }
+        return true;
+    }
     let Some(session) = app.forms.session.clone() else { return false };
     let Some(active) = app.session.active_sketch else { return false };
     if session.sketches.last() != Some(&active) {
@@ -581,14 +625,282 @@ pub fn intercept_finish(app: &mut SolveApp) -> bool {
     true
 }
 
+/// The stages of the object made by `feature`, to edit again in turn.
+pub fn chain_stages(app: &SolveApp, feature: u64) -> Vec<(u64, String)> {
+    let Some(f) = app.session.doc.feature(feature) else { return Vec::new() };
+    let part = |id: u64, fallback: String| {
+        app.session.doc.feature(id).and_then(|s| s.name.split_once(" · ").map(|(_, p)| p.to_string())).unwrap_or(fallback)
+    };
+    match &f.kind {
+        FeatureKind::Extrude { sketch, .. } => vec![(sketch.0, "Sketch".into())],
+        FeatureKind::Revolve { sketch, .. } => vec![(sketch.0, "Profile".into()), (sketch.0, "Axis".into())],
+        FeatureKind::Loft { sections, .. } => {
+            let n = sections.len();
+            sections
+                .iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    let fallback = match (n, i) {
+                        (2, 0) => "Base".to_string(),
+                        (2, _) => "Top".to_string(),
+                        _ => format!("Section {}", i + 1),
+                    };
+                    (x.sketch.0, part(x.sketch.0, fallback))
+                })
+                .collect()
+        }
+        FeatureKind::Sweep { sketch, path_sketch, .. } => vec![(path_sketch.0, "Path".into()), (sketch.0, "Profile".into())],
+        _ => Vec::new(),
+    }
+}
+
+/// Open stage `index` of the chain (a Revolve's axis stage keeps its sketch open).
+fn open_stage(app: &mut SolveApp, mut chain: Chain, index: usize) -> Result<(), String> {
+    let (sketch, label) = chain.stages.get(index).cloned().ok_or("no such sketch")?;
+    chain.index = index;
+    chain.jump = None;
+    chain.axis_before = None;
+    if app.session.active_sketch != Some(sketch) {
+        if app.session.active_sketch.is_some() {
+            leave(app, "sketch.finish");
+        }
+        app.forms.chain = Some(chain.clone());
+        reopen(app, sketch)?;
+    }
+    if label == "Axis" {
+        chain.axis_before = Some(curve_ids(app, sketch));
+        app.start("cad.line");
+        status(app, format!("{}: draw a new axis line (or keep the centerline), then Finish", chain.body), false);
+    } else {
+        let what = if index + 1 < chain.stages.len() { "Next" } else { "Finish" };
+        status(app, format!("{}: change the {} sketch, then {what}", chain.body, label.to_lowercase()), false);
+    }
+    app.forms.chain = Some(chain);
+    app.ui.tab = "SKETCH".into();
+    Ok(())
+}
+
+/// Finish (or Next) on a sketch of an object edited again.
+fn chain_step(app: &mut SolveApp, mut chain: Chain) -> Result<(), String> {
+    let (sketch, label) = chain.stages.get(chain.index).cloned().ok_or("the sketch is gone")?;
+    let feature = chain.feature;
+    let profile = !matches!(label.as_str(), "Path" | "Axis");
+    if label == "Axis" {
+        let before = chain.axis_before.clone().unwrap_or_default();
+        let axis = take_axis(app, sketch, &before)?;
+        let _ = app.run("timeline.edit", json!({"feature": feature, "set": {"axis": {"type": "sketch_line", "curve": axis}}}));
+    }
+    if profile || label == "Axis" {
+        let ends = open_ends(app, sketch);
+        if !ends.is_empty() {
+            let n = ends.len();
+            app.forms.open_ends = ends;
+            return Err(format!("the contour is not closed: {n} open end{} (marked red); join them, or Cancel", if n == 1 { "" } else { "s" }));
+        }
+        app.forms.open_ends.clear();
+        if solid_profiles(app, sketch).is_empty() {
+            return Err("the sketch needs a closed loop; draw one, or Cancel".into());
+        }
+    }
+    let target = chain.jump.unwrap_or(chain.index + 1);
+    // A Revolve's profile, then its axis: the same sketch stays open.
+    if chain.stages.get(target).is_some_and(|(id, _)| *id == sketch) {
+        return open_stage(app, chain, target);
+    }
+    leave(app, "sketch.finish");
+    // The object takes the sketch as it is now.
+    let is_path = label == "Path";
+    let result = if is_path {
+        path_of(app, sketch).and_then(|p| {
+            app.run("timeline.set_profiles", json!({"feature": feature, "sketch": sketch, "path": p.curves})).map(|_| ()).map_err(|e| e.to_string())
+        })
+    } else {
+        let loops = profile_loops(app, sketch);
+        let multi = app.session.doc.feature(feature).is_some_and(|f| matches!(f.kind, FeatureKind::Loft { .. } | FeatureKind::Sweep { .. }));
+        let params =
+            if multi { json!({"feature": feature, "sketch": sketch, "profiles": loops}) } else { json!({"feature": feature, "profiles": loops}) };
+        if loops.is_empty() { Ok(()) } else { app.run("timeline.set_profiles", params).map(|_| ()).map_err(|e| e.to_string()) }
+    };
+    let error = result.err().or_else(|| app.session.model.result(feature).and_then(|r| r.error.clone()));
+    if let Some(e) = error {
+        // The object cannot be made from it: the sketch stays open, to change or Cancel.
+        app.forms.chain = Some(chain.clone());
+        reopen(app, sketch)?;
+        return Err(format!("{} cannot be made: {e}. Change the sketch, or Cancel", chain.body));
+    }
+    if target < chain.stages.len() {
+        chain.index = target;
+        return open_stage(app, chain, target);
+    }
+    app.forms.chain = None;
+    let st = crate::open_meshing::session_world(&app.session);
+    let body = st.bodies.iter().find(|b| b.feature == feature).map(|b| b.name.clone());
+    drop(st);
+    if let Some(body) = body {
+        let _ = app.run("select.set", json!({"items": [{"type": "body", "name": body}]}));
+        app.shell_ui.properties = true;
+        status(app, format!("{body} follows its sketches; change its values in Properties"), false);
+    }
+    Ok(())
+}
+
+/// Edit a Model Line again (its double click): its sketch opens, Finish keeps it.
+pub fn edit_model_line(app: &mut SolveApp, sketch: u64) -> bool {
+    let is_line = app.session.doc.feature(sketch).is_some_and(|f| f.name.starts_with("Model Line") && matches!(f.kind, FeatureKind::Sketch { .. }));
+    if !is_line {
+        return false;
+    }
+    app.forms.chain = None;
+    app.edit_feature(sketch);
+    if app.session.active_sketch != Some(sketch) {
+        return false;
+    }
+    app.ui.tab = "SKETCH".into();
+    app.start("cad.line");
+    status(app, "Model Line: change the lines, then Finish", false);
+    true
+}
+
+/// Edit an object's sketches again, from stage `which` (its sketch id; default the first).
+pub fn edit_chain(app: &mut SolveApp, body: &str, feature: u64, which: Option<u64>) -> bool {
+    let stages = chain_stages(app, feature);
+    if stages.is_empty() {
+        return false;
+    }
+    // Already editing this object: go to the stage asked for, keeping what was changed.
+    if let Some(mut chain) = app.forms.chain.clone().filter(|c| c.feature == feature && app.session.active_sketch.is_some()) {
+        let to = which.and_then(|w| chain.stages.iter().position(|(id, _)| *id == w)).unwrap_or(0);
+        if to == chain.index {
+            return true;
+        }
+        chain.jump = Some(to);
+        if let Err(e) = chain_step(app, chain) {
+            status(app, e, true);
+        }
+        return true;
+    }
+    let index = which.and_then(|w| stages.iter().position(|(id, _)| *id == w)).unwrap_or(0);
+    let chain = Chain { feature, body: body.to_string(), stages, index, jump: None, axis_before: None };
+    if let Err(e) = open_stage(app, chain, index) {
+        app.forms.chain = None;
+        status(app, e, true);
+        return false;
+    }
+    app.shell_ui.properties = true;
+    true
+}
+
+/// Properties while an object's sketches are edited again: its sketches, to go to any of them.
+pub fn chain_properties_ui(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
+    let Some(chain) = app.forms.chain.clone() else { return false };
+    if app.session.active_sketch.is_none() {
+        return false;
+    }
+    ui.label(egui::RichText::new(&chain.body).strong());
+    ui.label(egui::RichText::new("Editing its sketches").small().weak());
+    ui.add_space(4.0);
+    if chain.stages.len() > 1 {
+        let mut go = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, (_, label)) in chain.stages.iter().enumerate() {
+                let current = i == chain.index;
+                let r = ui.add_enabled(!current, egui::Button::new(label.as_str()).selected(current));
+                crate::scenario::publish_target(&format!("form:stage:{label}"), r.rect);
+                if r.clicked() {
+                    go = Some(i);
+                }
+            }
+        });
+        if let Some(i) = go {
+            let mut c = chain.clone();
+            c.jump = Some(i);
+            if let Err(e) = chain_step(app, c) {
+                status(app, e, true);
+            }
+        }
+    }
+    let next = chain.index + 1 < chain.stages.len();
+    ui.label(
+        egui::RichText::new(if next {
+            "Next goes on to the next sketch; Cancel leaves this one as it was."
+        } else {
+            "Finish rebuilds the object; Cancel leaves this sketch as it was."
+        })
+        .small()
+        .weak(),
+    );
+    true
+}
+
 /// Which tools a form's sketch refuses, and why: a reference plane's takes a line only.
 pub fn blocked_in_form(app: &SolveApp, id: &str) -> Option<&'static str> {
-    let s = app.forms.session.as_ref()?;
-    (s.form == Form::Reference
-        && app.session.active_sketch.is_some()
+    let drawing = app.session.active_sketch.is_some()
         && (id.starts_with("cad.") || id.starts_with("sketch."))
-        && !matches!(id, "cad.line" | "sketch.finish" | "sketch.cancel"))
-    .then_some("A reference plane is drawn with a line only")
+        && !matches!(id, "cad.line" | "sketch.finish" | "sketch.cancel" | "sketch.delete" | "cad.erase" | "sketch.centerline");
+    if !drawing {
+        return None;
+    }
+    if let Some(s) = app.forms.session.as_ref() {
+        if s.form == Form::Reference {
+            return Some("A reference plane is drawn with a line only");
+        }
+        if s.axis_before.is_some() {
+            return Some("The axis is drawn with a line only");
+        }
+    }
+    app.forms.chain.as_ref().filter(|c| c.axis_before.is_some()).map(|_| "The axis is drawn with a line only")
+}
+
+/// Whether Finish on the open sketch goes on to the object's next sketch (shown as Next, an arrow).
+pub fn finish_is_next(app: &SolveApp) -> bool {
+    let Some(active) = app.session.active_sketch else { return false };
+    if let Some(c) = app.forms.chain.as_ref()
+        && c.stages.get(c.index).is_some_and(|(id, _)| *id == active)
+    {
+        return c.index + 1 < c.stages.len();
+    }
+    match app.forms.session.as_ref() {
+        Some(s) if s.sketches.last() == Some(&active) => {
+            let stage = if s.form == Form::Revolve && s.axis_before.is_some() { 1 } else { s.sketches.len().saturating_sub(1) };
+            stage + 1 < stage_labels(s.form).len()
+        }
+        _ => false,
+    }
+}
+
+/// The axis drawn in the axis stage: the first straight line not there before becomes the
+/// sketch's centerline (an earlier one goes); else the centerline it has.
+fn take_axis(app: &mut SolveApp, sketch: u64, before: &[String]) -> Result<String, String> {
+    let st = crate::open_meshing::session_world(&app.session);
+    let ss = st.sketch(sketch).ok_or("the sketch is gone")?;
+    let straight = |i: usize| matches!(ss.sketch.shape(i), Some(solidcraft_engine::sketch::Shape::Line { .. }));
+    let new: Vec<String> = ss
+        .sketch
+        .curves
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| straight(*i) && c.link.is_none() && !before.contains(&c.id))
+        .map(|(_, c)| c.id.clone())
+        .collect();
+    let old: Vec<String> = ss.sketch.curves.iter().filter(|c| c.centerline && !new.contains(&c.id)).map(|c| c.id.clone()).collect();
+    drop(st);
+    let Some(axis) = new.first().cloned() else {
+        return revolve_axis(app, sketch).ok_or_else(|| "draw the axis line, then Finish".to_string());
+    };
+    if !old.is_empty() {
+        let _ = app.run("sketch.delete", json!({"entities": old}));
+    }
+    let extra: Vec<String> = new.iter().skip(1).cloned().collect();
+    if !extra.is_empty() {
+        let _ = app.run("sketch.delete", json!({"entities": extra}));
+    }
+    app.run("sketch.centerline", json!({"curves": [axis], "value": true})).map_err(|e| e.to_string())?;
+    Ok(axis)
+}
+
+fn curve_ids(app: &SolveApp, sketch: u64) -> Vec<String> {
+    let st = crate::open_meshing::session_world(&app.session);
+    st.sketch(sketch).map(|ss| ss.sketch.curves.iter().map(|c| c.id.clone()).collect()).unwrap_or_default()
 }
 
 /// The first line drawn in the reference plane's sketch, in the world, and the sketch's normal.
@@ -609,6 +921,7 @@ fn reference_line(app: &SolveApp, sketch: u64) -> Option<(Vec3, Vec3, Vec3)> {
 /// made before this one.
 pub fn intercept_cancel(app: &mut SolveApp) -> bool {
     app.forms.after_edit = None;
+    app.forms.chain = None;
     if app.forms.leaving || app.forms.session.is_none() {
         return false;
     }
@@ -841,9 +1154,18 @@ fn step(app: &mut SolveApp, mut session: FormSession, active: u64) -> Result<(),
             leave(app, "sketch.finish");
             open_feature(app, "solid.extrude", vec![(0, profile_sels(active, &profiles))], &session);
         }
+        (Form::Revolve, _) if session.axis_before.is_none() => {
+            // The profile first; the axis is the next stage, drawn as a line in the same sketch.
+            closed(app)?;
+            session.axis_before = Some(curve_ids(app, active));
+            app.forms.session = Some(session);
+            app.start("cad.line");
+            status(app, "Revolve: draw the axis line, then Finish", false);
+        }
         (Form::Revolve, _) => {
+            let before = session.axis_before.clone().unwrap_or_default();
+            let axis = take_axis(app, active, &before)?;
             let profiles = closed(app)?;
-            let axis = revolve_axis(app, active).ok_or("draw the axis line: SKETCH ▸ Centerline (or a construction line), then Finish")?;
             app.forms.session = None;
             leave(app, "sketch.finish");
             let axis = crate::selection::curve_pick(&axis, active, app.session.active_sketch);
@@ -941,7 +1263,7 @@ fn revolve_axis(app: &SolveApp, sketch: u64) -> Option<String> {
 /// Open feature `command`'s window and fill its inputs; a void cuts.
 fn open_feature(app: &mut SolveApp, command: &'static str, inputs: Vec<(usize, Vec<Sel>)>, session: &FormSession) {
     let (void, name, pending) = (session.void, session.name.clone(), session.pending.clone());
-    app.forms.fill = Some(Fill { command, inputs, void, name, pending, frames: 30 });
+    app.forms.fill = Some(Fill { session: session.clone(), command, inputs, void, name, pending, frames: 30 });
     if app.session.active_sketch.is_none() && app.deferred.is_none() {
         app.start(command);
         apply_fill(app);
@@ -1025,9 +1347,21 @@ fn apply_fill(app: &mut SolveApp) -> bool {
             status(app, text, false);
         }
         Err(e) => {
-            // Back to the window, to fix what failed.
-            app.dialog = Some(dialog);
-            status(app, format!("{}: {e}", fill.name), true);
+            // The object cannot be made: its last sketch opens again, to change or Cancel.
+            let last = fill.session.sketches.last().copied();
+            let mut session = fill.session.clone();
+            if session.form == Form::Revolve
+                && let Some(sketch) = last
+            {
+                // Back in the axis stage, the axis drawn kept.
+                session.axis_before = Some(curve_ids(app, sketch));
+            }
+            app.forms.session = Some(session);
+            let reopened = last.map(|sketch| reopen(app, sketch));
+            if !matches!(reopened, Some(Ok(()))) {
+                app.forms.session = None;
+            }
+            status(app, format!("{} cannot be made: {e}. Change the sketch, or Cancel", fill.name), true);
         }
     }
     true
@@ -1043,7 +1377,7 @@ pub(crate) fn plain_mm(e: &str) -> Option<f64> {
 }
 
 /// The next free name for an object made by `tool`: `Extrusion 1`, `Extrusion 2`…
-fn next_object_name(app: &SolveApp, tool: &str) -> String {
+pub(crate) fn next_object_name(app: &SolveApp, tool: &str) -> String {
     let st = app.session.model.state();
     let taken = |n: &str| st.body(n).is_some() || app.session.doc.features.iter().any(|f| f.name == n || f.name.starts_with(&format!("{n} · ")));
     (1..10_000).map(|k| format!("{tool} {k}")).find(|n| !taken(n)).unwrap_or_else(|| tool.to_string())
@@ -1071,6 +1405,7 @@ fn sketch_name(s: &FormSession, index: usize) -> Option<String> {
 fn stage_labels(form: Form) -> &'static [&'static str] {
     match form {
         Form::Blend => &["Base", "Top"],
+        Form::Revolve => &["Profile", "Axis"],
         Form::Sweep => &["Path", "Profile"],
         Form::SweptBlend => &["Path", "Profile 1", "Profile 2"],
         _ => &["Sketch"],
@@ -1113,16 +1448,27 @@ pub fn properties_ui(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     ui.add_space(4.0);
     let labels = stage_labels(session.form);
     let mut open: Option<u64> = None;
+    let mut back_to_profile = false;
     if session.form != Form::ModelLine && labels.len() > 1 {
         ui.label("Sketches");
         ui.horizontal_wrapped(|ui| {
             for (i, label) in labels.iter().enumerate() {
-                let made = session.sketches.get(i).copied();
-                let current = made.is_some() && made == active;
+                // A Revolve's two stages share its sketch: Profile, then Axis.
+                let (made, current) = if session.form == Form::Revolve {
+                    let stage = usize::from(session.axis_before.is_some());
+                    (session.sketches.first().copied().filter(|_| i <= stage), i == stage)
+                } else {
+                    let made = session.sketches.get(i).copied();
+                    (made, made.is_some() && made == active)
+                };
                 let r = ui.add_enabled(made.is_some() && !current, egui::Button::new(*label).selected(current));
                 crate::scenario::publish_target(&format!("form:stage:{label}"), r.rect);
                 if r.clicked() {
-                    open = made;
+                    if session.form == Form::Revolve {
+                        back_to_profile = true;
+                    } else {
+                        open = made;
+                    }
                 }
             }
         });
@@ -1158,6 +1504,10 @@ pub fn properties_ui(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     });
     if changed && let Some(s) = app.forms.session.as_mut() {
         s.pending = pending;
+    }
+    if back_to_profile && let Some(s) = app.forms.session.as_mut() {
+        s.axis_before = None;
+        status(app, "Revolve: change the profile, then Next", false);
     }
     ui.label(egui::RichText::new("Finish the sketch to go on; the object is made with these values.").small().weak());
     if let Some(sketch) = open
@@ -1243,15 +1593,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             }
         }
     }
-    // A reference plane is made as soon as its line is drawn.
-    if let (Some(session), Some(active)) = (app.forms.session.clone(), app.session.active_sketch)
-        && session.form == Form::Reference
-        && session.sketches.last() == Some(&active)
-        && reference_line(app, active).is_some()
-        && let Err(why) = step(app, session, active)
-    {
-        status(app, format!("Reference Plane: {why}"), true);
-    }
+    // A reference plane is made when its sketch is finished (the line can still be changed).
     if let Some((sketch, feature, seen)) = app.forms.after_edit {
         if app.session.active_sketch == Some(sketch) {
             app.forms.after_edit = Some((sketch, feature, true));

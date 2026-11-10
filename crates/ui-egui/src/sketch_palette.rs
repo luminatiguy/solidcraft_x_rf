@@ -343,13 +343,28 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             ss.ends.untied.len(),
         )
     };
-    let vp = viewport(app, ctx);
+    // Docked in the right column (`dock`), above Properties; else beside the view's edge.
+    let column = crate::dock::right_column_used(app).then(|| crate::dock::right_column(app, ctx.content_rect()));
+    let vp = match column {
+        Some(c) => egui::Rect::from_min_max(
+            egui::pos2(c.left(), c.top()),
+            egui::pos2(c.right() + crate::shell::SHELL_GAP, c.bottom() + crate::shell::SHELL_GAP),
+        ),
+        None => viewport(app, ctx),
+    };
     if !vp.is_finite() || !vp.is_positive() {
         return;
     }
     let gap = crate::ui_kit::Container::new(ctx, crate::ui_kit::Surface::Palette).gap();
-    let bottom = vp.bottom().min(ctx.content_rect().bottom()) - gap;
-    let top = crate::shell::panel_top(app, vp, bottom, crate::frame::Side::Right);
+    let (top, bottom) = match column {
+        // Above Properties when it is docked too: at most a little over half the column.
+        Some(c) if app.shell_ui.properties && app.preferences.properties_docked => (c.top(), c.top() + c.height() * 0.58),
+        Some(c) => (c.top(), c.bottom()),
+        None => {
+            let bottom = vp.bottom().min(ctx.content_rect().bottom()) - gap;
+            (crate::shell::panel_top(app, vp, bottom, crate::frame::Side::Right), bottom)
+        }
+    };
     let frame = crate::ui_kit::Panel::palette_frame(ctx, app.ui.layout);
     let anchor = egui::pos2(vp.right() - gap - frame.stroke.width, top + frame.stroke.width);
     let shown = |key: &str| match key {
@@ -383,7 +398,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         crate::frame::Side::Right,
         frame,
     )
-    .width(width(vp));
+    .width(column.map_or_else(|| width(vp), |c| c.width()));
     let response = panel.window(ctx).show(ctx, |ui| {
         panel.palette(ui, bottom, top, |ui, part| match part {
             crate::ui_kit::Part::Header => {
@@ -488,7 +503,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 section_alias("sketch_palette:options_fold", "ui.palette_more");
             }
             crate::ui_kit::Part::Footer => {
-                let button = crate::ui_kit::wide_primary_button(ui, "Finish Sketch");
+                let button = crate::ui_kit::wide_primary_button(ui, if crate::forms::finish_is_next(app) { "Next  ➜" } else { "Finish Sketch" });
                 crate::scenario::publish_rect("sketch_palette:finish", button.rect);
                 crate::scenario::publish_handle("sketch_palette:finish", button.rect.center());
                 finish = button.clicked();

@@ -98,6 +98,11 @@ fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity:
         hidden_line_icon(p, r, dark, opacity, ink);
         return;
     }
+    if name == "next_stage" {
+        let dark = dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode);
+        next_icon(p, r, dark, opacity, ink);
+        return;
+    }
     if name == "void_cube" || name == "hatch_pattern" {
         let dark = dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode);
         if name == "void_cube" {
@@ -130,6 +135,20 @@ fn hidden_line_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<
     p.line_segment([t3, t2], stroke);
     p.line_segment([t2, t1], stroke);
     p.line_segment([t2, b2], stroke);
+}
+
+/// Next (a form's next sketch): a bold arrow pointing right, in the accent green of Finish.
+fn next_icon(p: &Painter, r: Rect, dark: bool, opacity: f32, ink: Option<Color32>) {
+    let side = r.width().min(r.height());
+    let c = r.center();
+    let s = side * 0.4;
+    let pt = |x: f32, y: f32| egui::pos2(c.x + x * s, c.y + y * s);
+    let fill = ink.unwrap_or(if dark { Color32::from_rgb(0x4c, 0xc2, 0x6a) } else { Color32::from_rgb(0x1f, 0x9a, 0x45) }).gamma_multiply(opacity);
+    // A shaft and a head, as one outline.
+    let shaft = [pt(-0.95, -0.28), pt(0.15, -0.28), pt(0.15, 0.28), pt(-0.95, 0.28)];
+    let head = [pt(0.05, -0.8), pt(0.95, 0.0), pt(0.05, 0.8)];
+    p.add(egui::Shape::convex_polygon(shaft.to_vec(), fill, egui::Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(head.to_vec(), fill, egui::Stroke::NONE));
 }
 
 /// Void Forms: a cube drawn in dashes (a void is the shape of what it takes away).

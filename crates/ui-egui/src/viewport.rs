@@ -5175,8 +5175,33 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 .collect();
             let _ = app.run("select.set", json!({ "items": items, "add": add }));
         }
+        // Double-click a void form (Show Void Forms): edit its sketches.
+        let void_edit = resp.double_clicked()
+            && !held
+            && !dim_edit
+            && app.tool.is_none()
+            && app.dialog.is_none()
+            && app.session.active_sketch.is_none()
+            && match crate::void_forms::hit(app, &proj, p) {
+                Some((feature, name)) => crate::void_forms::edit(app, feature, &name),
+                None => false,
+            };
+        // Double-click a Model Line: edit it again.
+        let line_edit = !void_edit
+            && resp.double_clicked()
+            && !held
+            && !dim_edit
+            && app.tool.is_none()
+            && app.dialog.is_none()
+            && app.session.active_sketch.is_none()
+            && match app.viewport.hover.clone() {
+                Some(Hit::SketchCurve { sketch, .. }) => crate::forms::edit_model_line(app, sketch),
+                _ => false,
+            };
         // Double-click a component's face: edit a linked one in place, activate any other.
-        if resp.double_clicked()
+        if !void_edit
+            && !line_edit
+            && resp.double_clicked()
             && !held
             && !dim_edit
             && mods.is_none()
@@ -5513,6 +5538,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::cad::paint_selected(app, &painter, &proj);
     crate::reference_planes::paint(app, &painter, &proj);
     crate::reference_planes::paint_outlines(app, &painter, &proj);
+    crate::void_forms::paint(app, &painter, &proj);
     crate::reference_planes::paint_work_plane_edges(app, &painter, &proj);
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);

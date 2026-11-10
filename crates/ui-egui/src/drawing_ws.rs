@@ -50,6 +50,8 @@ pub struct State {
     pan: Vec2,
     /// The Project Browser's folds before Drawing folded it: given back on return to Design.
     browser_before: Option<(bool, bool)>,
+    /// The loading spinner was shown: the sheet is worked out this frame.
+    spinner_shown: bool,
 }
 
 impl Default for State {
@@ -68,6 +70,7 @@ impl Default for State {
             scale: None,
             sheet: 1,
             browser_before: None,
+            spinner_shown: false,
         }
     }
 }
@@ -152,6 +155,28 @@ pub fn params(app: &SolveApp) -> Value {
         p["camera"] = json!(cam);
     }
     p
+}
+
+/// Is the sheet to be worked out again (the design or the layout changed)?
+fn stale(app: &SolveApp) -> bool {
+    let key = format!("{}|{}", params(app), app.session.revision);
+    app.drawing_ws.key.as_deref() != Some(key.as_str())
+}
+
+/// A spinning arc in the middle of `area`: the sheet is being worked out.
+fn spinner(ui: &egui::Ui, area: Rect) {
+    let t = crate::theme::Tokens::get();
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sc_drawing_spinner")));
+    let c = area.center();
+    let r = 22.0;
+    painter.circle_filled(c, r + 14.0, t.panel.gamma_multiply(0.92));
+    painter.circle_stroke(c, r, egui::Stroke::new(4.0, t.text_dim.gamma_multiply(0.35)));
+    let start = (ui.input(|i| i.time) * 5.0) as f32;
+    let pts: Vec<Pos2> =
+        (0..=24).map(|k| start + k as f32 / 24.0 * std::f32::consts::PI * 1.4).map(|a| Pos2::new(c.x + r * a.cos(), c.y + r * a.sin())).collect();
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(4.0, t.accent)));
+    painter.text(Pos2::new(c.x, c.y + r + 26.0), Align2::CENTER_CENTER, "Making the drawing…", FontId::proportional(13.0), t.text);
+    ui.ctx().request_repaint();
 }
 
 fn refresh(app: &mut SolveApp) {
@@ -253,7 +278,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // the browser), and scroll when the room left is short.
     let mut top = full.top();
     let mut sheet_top = full.top();
-    let mut width = 280.0_f32;
+    let mut width = if app.preferences.drawing_panel_width.is_finite() { app.preferences.drawing_panel_width.clamp(200.0, 600.0) } else { 280.0 };
     let column = Rect::from_min_size(full.min, Vec2::new(width, full.height()));
     for r in app.shell.cards.iter().copied().chain(app.shell.browser) {
         if r.left() < column.right() && r.right() > column.left() && r.bottom() < full.bottom() - 120.0 {
@@ -269,6 +294,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let width = width.min(full.width() * 0.45);
     let panel = Rect::from_min_max(Pos2::new(full.left(), top), Pos2::new(full.left() + width, full.bottom()));
     let sheet_area = Rect::from_min_max(Pos2::new(panel.right(), sheet_top), full.max).shrink(16.0);
+    // Its width is dragged at its right edge, as the docked panels' are.
+    let (moved, reset) = crate::dock::edge_handle(ui.ctx(), "sc_drawing_panel_width", panel.right(), panel.top(), panel.bottom());
+    if moved != 0.0 {
+        app.preferences.drawing_panel_width = (panel.width() + moved).clamp(200.0, 600.0);
+    }
+    if reset {
+        app.preferences.drawing_panel_width = 280.0;
+    }
     let mut action = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink(10.0)), |ui| {
         egui::ScrollArea::vertical().id_salt("drawing_ws_panel").show(ui, |ui| {
@@ -399,7 +432,17 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         None => {}
     }
+    // A sheet still to work out: the spinner shows first, the work runs on the next frame.
+    if stale(app) && !app.drawing_ws.spinner_shown {
+        app.drawing_ws.spinner_shown = true;
+        spinner(ui, sheet_area);
+        return;
+    }
+    if app.drawing_ws.spinner_shown {
+        spinner(ui, sheet_area);
+    }
     refresh(app);
+    app.drawing_ws.spinner_shown = false;
     let painter = ui.painter_at(sheet_area);
     let Some(sheet_size) = app.drawing_ws.preview.as_ref().map(|p| p.size) else {
         painter.text(

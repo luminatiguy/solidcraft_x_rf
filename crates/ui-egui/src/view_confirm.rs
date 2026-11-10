@@ -86,8 +86,11 @@ pub(crate) fn show(app: &mut SolveApp, ctx: &egui::Context) {
             // the next click cancels the sketch.
             let (cancel, cancel_enabled) =
                 if crate::toolbar::unfinished(app) { ("Cancel", true) } else { command("sketch.cancel").unwrap_or(("Cancel Sketch", false)) };
+            // Not the object's last sketch: Finish goes on to the next one.
+            let next = crate::forms::finish_is_next(app);
+            let (icon, finish) = if next { ("next_stage", "Next") } else { ("finish", finish) };
             [
-                Choice { action: Action::Ok, key: "view:confirm:ok", icon: "finish", label: finish, enabled: finish_enabled },
+                Choice { action: Action::Ok, key: "view:confirm:ok", icon, label: finish, enabled: finish_enabled },
                 Choice { action: Action::Cancel, key: "view:confirm:cancel", icon: "sketch_cancel", label: cancel, enabled: cancel_enabled },
             ]
         }

@@ -168,8 +168,8 @@ pub const SECTIONS: &[Section] = &[
     Section {
         tab: "MODEL",
         panel: "WORK PLANE",
-        promoted: 4,
-        ids: &["workplane.set", "workplane.show", "workplane.reference", "workplane.show_references"],
+        promoted: 5,
+        ids: &["workplane.set", "workplane.show", "workplane.reference", "workplane.show_references", "workplane.show_voids"],
     },
     Section { tab: "MODEL", panel: "DRAW", promoted: 1, ids: &["model.line"] },
     // Only while a linked design is edited in place, pinned at the right as FINISH SKETCH is.
@@ -441,6 +441,7 @@ const LEGACY_RENDER_SECTIONS: &[Section] = &[
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("workplane.show_references", "Show Ref. Planes"),
+    ("workplane.show_voids", "Show Voids"),
     ("render.batch", "All Shots"),
     ("render.cancel", "Cancel"),
     ("render.export", "Export Image"),

@@ -28,6 +28,8 @@ pub struct State {
     clear_selection: bool,
     /// Whole-object picking, off while the tool lights single faces: given back at the end.
     restore_pick_bodies: Option<bool>,
+    /// The hatch picked in the browser (body, face), shown in Properties.
+    pub selected: Option<(String, usize)>,
 }
 
 impl Default for State {
@@ -43,6 +45,7 @@ impl Default for State {
             hover: None,
             clear_selection: false,
             restore_pick_bodies: None,
+            selected: None,
         }
     }
 }

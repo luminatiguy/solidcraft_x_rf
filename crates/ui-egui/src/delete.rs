@@ -121,6 +121,11 @@ pub fn delete_selection(app: &mut SolveApp) {
     if crate::sketch3d::delete_selected(app) || crate::sketch_tools::delete_glyph(app) {
         return;
     }
+    // A hatch picked in the browser: Delete takes the hatch, not its body.
+    if let Some(h) = crate::browser::hatches::selected(app) {
+        crate::browser::hatches::remove(app, &h.body, h.face);
+        return;
+    }
     let mut params = selection_params(app);
     // In Edit Joint with nothing else selected, Delete means the joint being edited (#3749).
     if is_empty(&params)

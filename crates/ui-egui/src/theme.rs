@@ -1299,6 +1299,27 @@ pub struct Tokens {
     pub logo: [Color32; 3],
 }
 
+static SQUARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Square windows and buttons (Preferences ▸ Appearance ▸ Rounded corners off): every radius 0.
+pub fn set_square(on: bool) {
+    SQUARE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn square() -> bool {
+    SQUARE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn squared(mut t: Tokens) -> Tokens {
+    if square() {
+        t.radius_sm = 0;
+        t.radius_md = 0;
+        t.radius_lg = 0;
+        t.radius_xl = 0;
+    }
+    t
+}
+
 impl Tokens {
     /// An expanded outline follows its fill, including a theme's deliberately square corners.
     pub(crate) fn outset_radius(radius: f32, outset: f32) -> f32 {
@@ -1324,6 +1345,10 @@ impl Tokens {
     /// [`Tokens::get`] in another colour vision mode: the Colour vision preference previews the
     /// mode being chosen before it is applied (#7152).
     pub fn get_in(mode: ColorVision) -> Tokens {
+        squared(Self::get_rounded(mode))
+    }
+
+    fn get_rounded(mode: ColorVision) -> Tokens {
         if let Some(published) = PUBLISHED.get().filter(|p| p.environment == Environment::current()) {
             if mode == published.environment.vision {
                 return published.tokens;

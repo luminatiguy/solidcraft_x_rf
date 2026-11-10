@@ -68,37 +68,29 @@ pub fn edit_object(app: &mut SolveApp, body: &str) -> bool {
 
 /// [`edit_object`] with the sketch to open (one of the object's; `None`: its first).
 pub fn edit_object_sketch(app: &mut SolveApp, body: &str, which: Option<u64>) -> bool {
-    // An open sketch is finished first (switching between an object's sketches).
+    let st = crate::open_meshing::session_world(&app.session);
+    let Some(b) = st.body(body) else { return false };
+    let feature = b.feature;
+    drop(st);
+    // Going to another sketch of the object being edited keeps the edit going.
+    if app.forms.chain.as_ref().is_some_and(|c| c.feature == feature) && app.session.active_sketch.is_some() {
+        return crate::forms::edit_chain(app, body, feature, which);
+    }
+    // An open sketch is finished first.
     if app.session.active_sketch.is_some() {
         app.finish_sketch();
         if app.session.active_sketch.is_some() {
             return false;
         }
     }
-    let st = crate::open_meshing::session_world(&app.session);
-    let Some(b) = st.body(body) else { return false };
-    let Some(f) = app.session.doc.feature(b.feature) else { return false };
-    let feature = f.id;
-    let reopen = matches!(f.kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. });
-    let sketch = match &f.kind {
-        FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } => Some(sketch.0),
-        FeatureKind::Sweep { path_sketch, .. } => Some(path_sketch.0),
-        FeatureKind::Loft { sections, .. } => sections.first().map(|s| s.sketch.0),
-        _ => None,
-    };
-    drop(st);
-    let sketch = which.or(sketch);
-    let Some(sketch) = sketch else { return false };
+    let Some(f) = app.session.doc.feature(feature) else { return false };
     // While the sketch changes, the object takes every closed region, so removing a loop (a
     // hole) doesn't break it; its regions are chosen again when the sketch is finished.
-    if reopen {
+    if matches!(f.kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. }) {
         let _ = app.run("timeline.set_profiles", serde_json::json!({"feature": feature, "profiles": "all"}));
     }
-    app.edit_feature(sketch);
-    app.forms.after_edit = reopen.then_some((sketch, feature, false));
-    app.shell_ui.properties = true;
-    app.set_status("Editing the object's sketch: change it, then Finish (its values are in Properties)", false);
-    true
+    app.forms.after_edit = None;
+    crate::forms::edit_chain(app, body, feature, which)
 }
 
 /// Unjoin: the last join that made the selected object goes, giving its objects back.

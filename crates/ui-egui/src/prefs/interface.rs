@@ -13,6 +13,18 @@ pub(super) fn appearance(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
         ui_kit::settings_section_count(ui, "theme", app.tr("ui.theme"), Some(&count), |ui| {
             theme_row(app, ui);
             theme_options_row(app, ui);
+            // Square windows, panels and buttons when off.
+            let mut rounded = app.preferences.rounded_corners;
+            let r = ui.checkbox(&mut rounded, "Rounded corners on windows and buttons");
+            crate::scenario::publish_target("prefs:rounded_corners", r.rect);
+            if r.changed() {
+                app.preferences.rounded_corners = rounded;
+            }
+            // Docked panels beside the model instead of over it.
+            let mut limit = app.preferences.panels_limit_view;
+            if ui.checkbox(&mut limit, "Docked panels limit the model's space").changed() {
+                app.preferences.panels_limit_view = limit;
+            }
         });
         ui_kit::settings_section(ui, "viewport_logo", app.tr("prefs.appearance.viewport_logo"), |ui| {
             // The 3D view in the theme's colours, or the Light or Dark theme's (#4146).

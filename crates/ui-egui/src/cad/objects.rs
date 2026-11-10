@@ -128,6 +128,15 @@ pub fn plane_name(app: &SolveApp) -> String {
     }
 }
 
+/// The tool word of a body's name, for its copy's name: `Extrusion 1` → `Extrusion`.
+fn tool_word(body: &str) -> String {
+    let base = body.split(" (").next().unwrap_or(body).trim();
+    match base.rsplit_once(' ') {
+        Some((word, n)) if n.chars().all(|c| c.is_ascii_digit()) && !word.is_empty() => word.to_string(),
+        _ => base.to_string(),
+    }
+}
+
 fn arr(v: V3) -> serde_json::Value {
     json!([v.x, v.y, v.z])
 }
@@ -180,11 +189,42 @@ impl ObjectTool {
         Ok(())
     }
 
+    /// Each body moved as a form (its sketches onto new planes of their own, so it is edited
+    /// where it now is; a copy a new form named after the tool); the rest (a box, an import) by
+    /// `fallback`, a command taking `bodies`.
+    fn forms_then(
+        &self,
+        app: &mut SolveApp,
+        motion: (&str, serde_json::Value),
+        copy: bool,
+        fallback: Option<(&str, serde_json::Value)>,
+    ) -> Result<(), String> {
+        let mut rest = Vec::new();
+        for body in &self.bodies {
+            let mut p = json!({"bodies": [body], "copy": copy});
+            if let Some(m) = p.as_object_mut() {
+                m.insert(motion.0.to_string(), motion.1.clone());
+                if copy {
+                    m.insert("names".into(), json!([crate::forms::next_object_name(app, &tool_word(body))]));
+                }
+            }
+            if app.run("form.transform", p).is_err() {
+                rest.push(body.clone());
+            }
+        }
+        if let (false, Some((cmd, params))) = (rest.is_empty(), fallback) {
+            let mut p = params;
+            if let Some(m) = p.as_object_mut() {
+                m.insert("bodies".into(), json!(rest));
+            }
+            app.run(cmd, p).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     fn run_move(&mut self, app: &mut SolveApp, from: V3, to: V3, copy: bool) -> Result<(), String> {
         let d = to - from;
-        if !self.bodies.is_empty() {
-            app.run("solid.move", json!({"bodies": self.bodies, "translate": arr(d), "copy": copy})).map_err(|e| e.to_string())?;
-        }
+        self.forms_then(app, ("translate", arr(d)), copy, Some(("solid.move", json!({"translate": arr(d), "copy": copy}))))?;
         self.move_planes(app, copy, &|v| v + d)
     }
 
@@ -193,10 +233,12 @@ impl ObjectTool {
         // Turned about the axis through the base point: R·p + (b − R·b).
         let a = degrees.to_radians();
         let t = base - rotated(base, k, a);
-        if !self.bodies.is_empty() {
-            app.run("solid.move", json!({"bodies": self.bodies, "axis": arr(k), "angle": format!("{degrees} deg"), "translate": arr(t)}))
-                .map_err(|e| e.to_string())?;
-        }
+        self.forms_then(
+            app,
+            ("rotate", json!({"origin": arr(base), "axis": arr(k), "angle": degrees})),
+            false,
+            Some(("solid.move", json!({"axis": arr(k), "angle": format!("{degrees} deg"), "translate": arr(t)}))),
+        )?;
         self.move_planes(app, false, &|v| base + rotated(v - base, k, a))
     }
 
@@ -205,11 +247,22 @@ impl ObjectTool {
         let Some(n) = normal.normalized() else {
             return Err("the mirror line has no length on the work plane".into());
         };
-        if !self.bodies.is_empty() {
-            app.run("solid.mirror", json!({"bodies": self.bodies, "plane": {"origin": arr(wa), "normal": arr(normal)}}))
+        // A form mirrored is a new form (or, erasing the source, the form itself mirrored).
+        let mut rest = ObjectTool { op: self.op, stage: self.stage, bodies: Vec::new(), planes: Vec::new(), copies: 0 };
+        for body in &self.bodies {
+            let mut p = json!({"bodies": [body], "mirror": {"origin": arr(wa), "normal": arr(normal)}, "copy": !erase});
+            if !erase && let Some(m) = p.as_object_mut() {
+                m.insert("names".into(), json!([crate::forms::next_object_name(app, &tool_word(body))]));
+            }
+            if app.run("form.transform", p).is_err() {
+                rest.bodies.push(body.clone());
+            }
+        }
+        if !rest.bodies.is_empty() {
+            app.run("solid.mirror", json!({"bodies": rest.bodies, "plane": {"origin": arr(wa), "normal": arr(normal)}}))
                 .map_err(|e| e.to_string())?;
             if erase {
-                app.run("solid.remove", json!({"bodies": self.bodies})).map_err(|e| e.to_string())?;
+                app.run("solid.remove", json!({"bodies": rest.bodies})).map_err(|e| e.to_string())?;
             }
         }
         // A reference plane mirrored is the same plane moved (keeping it is a copy).

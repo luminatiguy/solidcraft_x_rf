@@ -616,7 +616,7 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     let mut open = true;
     // The selected object, else the one whose sketch is open for editing.
     let found = selected_feature(app).or_else(|| {
-        let (_, feature, _) = app.forms.after_edit?;
+        let feature = app.forms.chain.as_ref().map(|c| c.feature).or(app.forms.after_edit.map(|a| a.1))?;
         let st = crate::open_meshing::session_world(&app.session);
         st.bodies.iter().find(|b| b.feature == feature).map(|b| (b.name.clone(), feature))
     });
@@ -626,95 +626,151 @@ pub fn properties(app: &mut SolveApp, ctx: &egui::Context) {
     let mut edit_sketch: Option<String> = None;
     let mut edit_feature: Option<u64> = None;
     let mut blend_apply: Option<(u64, usize, String)> = None;
-    egui::Window::new("Properties")
-        .open(&mut open)
-        .default_pos(pos2(ctx.content_rect().right() - 320.0, 160.0))
-        .default_width(280.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            // A form being drawn shows its values; a selection in the open sketch, its curves.
-            if crate::sketch_props::ui(app, ui) || crate::forms::properties_ui(app, ui) {
-                return;
+    let docked = app.preferences.properties_docked && app.preferences.panels_limit_view;
+    let mut toggle_dock = false;
+    let mut body = |app: &mut SolveApp, ui: &mut egui::Ui| {
+        // A form being drawn shows its values; a selection in the open sketch, its curves.
+        if crate::browser::hatches::properties_ui(app, ui)
+            || crate::sketch_props::ui(app, ui)
+            || crate::forms::properties_ui(app, ui)
+            || crate::forms::chain_properties_ui(app, ui)
+        {
+            return;
+        }
+        let Some((body, feature)) = &found else {
+            ui.label(egui::RichText::new("Select an object to see its properties.").color(Tokens::get().text_dim));
+            return;
+        };
+        let Some(info) = &info else {
+            ui.label("This object has no editable feature.");
+            return;
+        };
+        egui::Grid::new("sc_props").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
+            ui.label("Object");
+            ui.label(egui::RichText::new(body).strong());
+            ui.end_row();
+            ui.label("Made by");
+            ui.label(format!("{} ({})", info["type_name"].as_str().unwrap_or(""), info["name"].as_str().unwrap_or("")));
+            ui.end_row();
+            let inputs = info["inputs"].as_array().cloned().unwrap_or_default();
+            for (i, input) in inputs.iter().enumerate() {
+                let label = input["label"].as_str().unwrap_or("Value");
+                let expr = input["expression"].as_str().unwrap_or("").to_string();
+                ui.label(label);
+                let editing = app.shell_ui.editing.as_ref().filter(|(f, k, _)| f == feature && *k == i).map(|e| e.2.clone());
+                let mut text = editing.clone().unwrap_or(expr.clone());
+                let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
+                if resp.changed() || resp.has_focus() {
+                    app.shell_ui.editing = Some((*feature, i, text.clone()));
+                }
+                if resp.lost_focus() {
+                    if ui.input(|k| k.key_pressed(egui::Key::Enter)) && text.trim() != expr {
+                        apply = Some((*feature, i, text.clone()));
+                    }
+                    app.shell_ui.editing = None;
+                }
+                ui.end_row();
             }
-            let Some((body, feature)) = &found else {
-                ui.label(egui::RichText::new("Select an object to see its properties.").color(Tokens::get().text_dim));
-                return;
-            };
-            let Some(info) = &info else {
-                ui.label("This object has no editable feature.");
-                return;
-            };
-            egui::Grid::new("sc_props").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
-                ui.label("Object");
-                ui.label(egui::RichText::new(body).strong());
-                ui.end_row();
-                ui.label("Made by");
-                ui.label(format!("{} ({})", info["type_name"].as_str().unwrap_or(""), info["name"].as_str().unwrap_or("")));
-                ui.end_row();
-                let inputs = info["inputs"].as_array().cloned().unwrap_or_default();
-                for (i, input) in inputs.iter().enumerate() {
-                    let label = input["label"].as_str().unwrap_or("Value");
-                    let expr = input["expression"].as_str().unwrap_or("").to_string();
-                    ui.label(label);
-                    let editing = app.shell_ui.editing.as_ref().filter(|(f, k, _)| f == feature && *k == i).map(|e| e.2.clone());
-                    let mut text = editing.clone().unwrap_or(expr.clone());
+            if let Some(rows) = blend_rows(app, *feature) {
+                for (k, (label, value)) in rows.iter().enumerate() {
+                    ui.label(*label);
+                    let key = 1000 + k;
+                    let editing = app.shell_ui.editing.as_ref().filter(|(f, i, _)| f == feature && *i == key).map(|e| e.2.clone());
+                    let mut text = editing.unwrap_or(value.clone());
                     let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
                     if resp.changed() || resp.has_focus() {
-                        app.shell_ui.editing = Some((*feature, i, text.clone()));
+                        app.shell_ui.editing = Some((*feature, key, text.clone()));
                     }
                     if resp.lost_focus() {
-                        if ui.input(|k| k.key_pressed(egui::Key::Enter)) && text.trim() != expr {
-                            apply = Some((*feature, i, text.clone()));
+                        if ui.input(|k| k.key_pressed(egui::Key::Enter)) && text.trim() != value.trim() {
+                            blend_apply = Some((*feature, k, text.clone()));
                         }
                         app.shell_ui.editing = None;
                     }
                     ui.end_row();
                 }
-                if let Some(rows) = blend_rows(app, *feature) {
-                    for (k, (label, value)) in rows.iter().enumerate() {
-                        ui.label(*label);
-                        let key = 1000 + k;
-                        let editing = app.shell_ui.editing.as_ref().filter(|(f, i, _)| f == feature && *i == key).map(|e| e.2.clone());
-                        let mut text = editing.unwrap_or(value.clone());
-                        let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
-                        if resp.changed() || resp.has_focus() {
-                            app.shell_ui.editing = Some((*feature, key, text.clone()));
-                        }
-                        if resp.lost_focus() {
-                            if ui.input(|k| k.key_pressed(egui::Key::Enter)) && text.trim() != value.trim() {
-                                blend_apply = Some((*feature, k, text.clone()));
-                            }
-                            app.shell_ui.editing = None;
-                        }
-                        ui.end_row();
+            }
+            if let Some(e) = info["error"].as_str() {
+                ui.label("Error");
+                ui.colored_label(Tokens::get().error, e);
+                ui.end_row();
+            }
+        });
+        ui.add_space(6.0);
+        let sketches = object_sketches(app, *feature);
+        if !sketches.is_empty() {
+            ui.label("Sketches");
+            ui.horizontal_wrapped(|ui| {
+                for (label, sketch) in &sketches {
+                    let current = app.session.active_sketch == Some(*sketch);
+                    let r = ui.add_enabled(!current, egui::Button::new(label.as_str()).selected(current));
+                    crate::scenario::publish_target(&format!("props:sketch:{label}"), r.rect);
+                    if r.clicked() {
+                        open_sketch = Some((body.clone(), *sketch));
                     }
-                }
-                if let Some(e) = info["error"].as_str() {
-                    ui.label("Error");
-                    ui.colored_label(Tokens::get().error, e);
-                    ui.end_row();
                 }
             });
-            ui.add_space(6.0);
-            let sketches = object_sketches(app, *feature);
-            if !sketches.is_empty() {
-                ui.label("Sketches");
-                ui.horizontal_wrapped(|ui| {
-                    for (label, sketch) in &sketches {
-                        let current = app.session.active_sketch == Some(*sketch);
-                        let r = ui.add_enabled(!current, egui::Button::new(label.as_str()).selected(current));
-                        crate::scenario::publish_target(&format!("props:sketch:{label}"), r.rect);
-                        if r.clicked() {
-                            open_sketch = Some((body.clone(), *sketch));
+        } else if ui.button("Edit…").clicked() {
+            edit_feature = Some(*feature);
+        }
+        let _ = &mut edit_sketch;
+        ui.label(egui::RichText::new("Type a value and press Enter to apply it.").small().color(Tokens::get().text_dim));
+    };
+    if docked {
+        // Docked in the right column, below the sketch's panel while a sketch is open.
+        let full = ctx.content_rect();
+        let column = crate::dock::right_column(app, full);
+        let mut top = column.top();
+        if app.session.active_sketch.is_some()
+            && let Some(p) = app.viewport.palette_rect
+        {
+            top = (p.bottom() + crate::shell::SHELL_GAP).min(column.bottom() - 120.0).max(column.top());
+        }
+        let rect = Rect::from_min_max(pos2(column.left(), top), column.max);
+        let t = Tokens::get();
+        let host = Container::new(ctx, Surface::Panel);
+        let frame = host.frame(ctx, t.panel, crate::frame::Side::Right).inner_margin(8);
+        let shown = host.area(egui::Id::new("sc_properties_dock")).fixed_pos(rect.min).show(ctx, |ui| {
+            host.show_frame(ui, frame, rect, |ui| {
+                let inner = rect.size() - frame.total_margin().sum();
+                ui.set_width(inner.x.max(10.0));
+                ui.set_min_height(inner.y.max(10.0));
+                ui.set_max_height(inner.y.max(10.0));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Properties").strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").on_hover_text("Close").clicked() {
+                            open = false;
                         }
-                    }
+                        if ui.small_button("⧉").on_hover_text("Float (undock)").clicked() {
+                            toggle_dock = true;
+                        }
+                    });
                 });
-            } else if ui.button("Edit…").clicked() {
-                edit_feature = Some(*feature);
-            }
-            let _ = &mut edit_sketch;
-            ui.label(egui::RichText::new("Type a value and press Enter to apply it.").small().color(Tokens::get().text_dim));
+                ui.separator();
+                egui::ScrollArea::vertical().id_salt("sc_properties_scroll").auto_shrink([false, false]).show(ui, |ui| body(app, ui));
+            });
         });
+        app.shell.properties = Some(shown.response.rect);
+        crate::dock::width_handle(app, ctx, column);
+    } else {
+        app.shell.properties = None;
+        egui::Window::new("Properties")
+            .open(&mut open)
+            .default_pos(pos2(ctx.content_rect().right() - 320.0, 160.0))
+            .default_width(280.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if ui.small_button("Dock right").on_hover_text("Dock in the right column").clicked() {
+                    toggle_dock = true;
+                }
+                body(app, ui);
+            });
+    }
+    if toggle_dock {
+        app.preferences.properties_docked = !app.preferences.properties_docked;
+        app.preferences.panels_limit_view = true;
+    }
     if !open {
         app.shell_ui.properties = false;
     }

@@ -60,6 +60,7 @@ pub mod dialogs_view_dxf;
 pub mod dim_view;
 #[cfg(test)]
 mod dimension_create_ui_tests;
+mod dock;
 pub mod documents;
 pub mod drag_extrude;
 pub mod drag_snap;
@@ -335,6 +336,7 @@ mod viewport_details;
 mod viewport_layout;
 mod viewport_status;
 mod viewport_status_fixture;
+mod void_forms;
 pub mod workspace;
 
 use std::sync::mpsc::Receiver;
@@ -2974,7 +2976,9 @@ impl SolveApp {
         // The view's own dark or light only changes tokens, not egui's visuals: no restyle.
         theme::set_viewport_dark(self.preferences.viewport_theme.dark());
         theme::set_viewport_background(self.preferences.viewport_background);
-        if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
+        let square = !self.preferences.rounded_corners;
+        if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision || theme::square() != square {
+            theme::set_square(square);
             theme::set_dark(self.ui.dark);
             theme::set_vision(self.preferences.color_vision);
             theme::apply(ctx);
@@ -3242,7 +3246,9 @@ impl SolveApp {
             let continuing_comparison = render_workspace::comparison_drag_captured(self) && ui.input(|i| i.pointer.primary_down());
             let blocked =
                 !continuing_navigation && !continuing_comparison && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| shell::covered(self, p));
-            let mut viewport_ui = ui.new_child(egui::UiBuilder::new().max_rect(full).id_salt("floating_viewport"));
+            // Docked panels limit the model's space (`dock`): the scene is drawn between them.
+            let model = dock::model_rect(self, full);
+            let mut viewport_ui = ui.new_child(egui::UiBuilder::new().max_rect(model).id_salt("floating_viewport"));
             if blocked {
                 // Disabled only to shield the scene from input under a card or menu; it must
                 // not fade, or the whole viewport dims whenever the pointer is over the shell.
@@ -3292,7 +3298,9 @@ impl SolveApp {
                     viewport::refresh_layout(self, ui.ctx());
                 } else {
                     preview::update(self, ui.ctx());
-                    self.show_workspace(ui);
+                    let model = dock::model_rect(self, ui.max_rect());
+                    let mut model_ui = ui.new_child(egui::UiBuilder::new().max_rect(model).id_salt("docked_viewport"));
+                    self.show_workspace(&mut model_ui);
                 }
             });
         if render_workspace::active(self) {

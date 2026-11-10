@@ -111,7 +111,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         "feature: id|name, index: the input's place in timeline.inspect's inputs, expression: text or a number in the input's unit (the Properties window) → as timeline.edit",
     ),
     CommandSpec::new("timeline.set_profiles", "Set Feature Profiles", set_profiles).icon("edit").params(
-        "feature: id|name (an extrude or revolve), profiles: \"all\" | [[curve id, …] outer loop, …] (each a profile by its outer loop) → as timeline.edit",
+        "feature: id|name (an extrude, revolve, blend or sweep), profiles: \"all\" | [[curve id, …] outer loop, …] (each a profile by its outer loop); \
+         sketch?: id|name (a blend's section, a sweep's profile or path sketch); path?: [curve ids] (a sweep's path) → as timeline.edit",
     ),
     CommandSpec::new("timeline.set_plane_offset", "Set Sketch Plane Offset", set_plane_offset).icon("edit").params(
         "sketch: id|name, offset: length expression → the sketch's plane offset along its base plane's normal (a plain plane becomes offset from itself); as timeline.edit. \
@@ -1219,7 +1220,8 @@ fn set_profiles(s: &mut Session, p: &Value) -> Result<Value> {
     let id = feature_id(s, p.get("feature"), cmd)?;
     let f = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "feature"))?;
     let sel = match p.get("profiles") {
-        Some(Value::String(t)) if t == "all" => solidcraft_doc::ProfileSel::All,
+        None if p.get("path").is_some() => None,
+        Some(Value::String(t)) if t == "all" => Some(solidcraft_doc::ProfileSel::All),
         Some(Value::Array(loops)) if !loops.is_empty() && loops.len() <= 10_000 => {
             let mut out = Vec::with_capacity(loops.len());
             for l in loops {
@@ -1236,14 +1238,43 @@ fn set_profiles(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 out.push(ids);
             }
-            solidcraft_doc::ProfileSel::Curves { loops: out }
+            Some(solidcraft_doc::ProfileSel::Curves { loops: out })
         }
         _ => return Err(bad(cmd, "profiles: \"all\" or a list of loops")),
     };
+    let need = |sel: Option<solidcraft_doc::ProfileSel>| sel.ok_or_else(|| bad(cmd, "profiles: \"all\" or a list of loops"));
+    // A Blend's or Sweep's profiles are those of one of its sketches: `sketch` says which.
+    let of = match p.get("sketch") {
+        None => None,
+        Some(v) => Some(feature_id(s, Some(v), cmd)?),
+    };
+    // A Sweep's path drawn again: its curves.
+    let path: Option<Vec<String>> = p
+        .get("path")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).take(100_000).map(str::to_string).collect())
+        .filter(|v: &Vec<String>| !v.is_empty());
     let mut nf = f.clone();
     match &mut nf.kind {
-        solidcraft_doc::FeatureKind::Extrude { profiles, .. } | solidcraft_doc::FeatureKind::Revolve { profiles, .. } => *profiles = sel,
-        _ => return Err(bad(cmd, "only an extrude or a revolve takes profiles here")),
+        solidcraft_doc::FeatureKind::Extrude { profiles, .. } | solidcraft_doc::FeatureKind::Revolve { profiles, .. } => *profiles = need(sel)?,
+        solidcraft_doc::FeatureKind::Loft { sections, .. } => {
+            let at = sections
+                .iter_mut()
+                .find(|x| Some(x.sketch.0) == of && x.point.is_none())
+                .ok_or_else(|| bad(cmd, "`sketch` is none of the blend's sections"))?;
+            at.profiles = need(sel)?;
+        }
+        solidcraft_doc::FeatureKind::Sweep { sketch, profiles, path_sketch, path: curves, .. } => {
+            if Some(sketch.0) == of || of.is_none() {
+                *profiles = need(sel)?;
+            } else if Some(path_sketch.0) != of {
+                return Err(bad(cmd, "`sketch` is neither the sweep's profile nor its path"));
+            }
+            if let Some(new) = path {
+                *curves = new;
+            }
+        }
+        _ => return Err(bad(cmd, "only an extrude, revolve, blend or sweep takes profiles here")),
     }
     let before = serde_json::to_value(&f).map_err(|e| EngineError::Other(e.to_string()))?;
     let after = serde_json::to_value(&nf).map_err(|e| EngineError::Other(e.to_string()))?;

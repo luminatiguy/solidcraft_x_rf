@@ -124,18 +124,85 @@ fn cancelling_a_blend_removes_its_base() {
 }
 
 #[test]
-fn revolve_needs_an_axis_line() {
+fn revolve_draws_its_axis_as_the_next_stage() {
     let mut h = Harness::new();
     start(&mut h, "form.revolve");
+    let sketch = h.app.session.active_sketch.unwrap();
+    assert!(crate::forms::finish_is_next(&h.app), "the profile's Finish is Next");
     h.app.run("sketch.rectangle.two_point", json!({"p0": [10, 0], "p1": [20, 30]})).unwrap();
     finish(&mut h);
-    assert!(h.app.session.active_sketch.is_some(), "no axis yet: the sketch stays open");
+    // The axis stage: the same sketch, a line only, and Finish is the last.
+    assert_eq!(h.app.session.active_sketch, Some(sketch));
+    assert!(!crate::forms::finish_is_next(&h.app));
+    assert!(crate::forms::blocked_in_form(&h.app, "cad.circle").is_some(), "the axis is a line only");
+    finish(&mut h);
+    assert_eq!(h.app.session.active_sketch, Some(sketch), "no axis yet: the sketch stays open");
+    // A plain line becomes the axis (a centerline), not a profile edge.
     h.app.run("sketch.line", json!({"points": [[0, -5], [0, 40]], "ids": ["ax"]})).unwrap();
-    h.app.run("sketch.centerline", json!({"curves": ["ax"], "value": true})).unwrap();
     finish(&mut h);
     ok(&mut h);
     assert!(matches!(last_kind(&h), FeatureKind::Revolve { .. }));
     assert_eq!(bodies(&h), 1);
+    // Edited again: Profile, then Axis (Next on the first).
+    let body = h.app.session.model.state().bodies[0].name.clone();
+    assert!(crate::objects::edit_object_sketch(&mut h.app, &body, None));
+    h.frames(2);
+    assert!(crate::forms::finish_is_next(&h.app));
+    finish(&mut h);
+    assert_eq!(h.app.session.active_sketch, Some(sketch), "the axis stage, same sketch");
+    assert!(!crate::forms::finish_is_next(&h.app));
+    finish(&mut h);
+    assert!(h.app.session.active_sketch.is_none(), "{:?}", h.app.status);
+    assert_eq!(bodies(&h), 1);
+}
+
+/// A Blend edited again goes through both its sketches: Next on the base opens the top.
+#[test]
+fn a_blend_edited_again_goes_through_both_sketches() {
+    let mut h = Harness::new();
+    start(&mut h, "form.blend");
+    let base = h.app.session.active_sketch.unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 20]})).unwrap();
+    assert!(crate::forms::finish_is_next(&h.app));
+    finish(&mut h);
+    let top = h.app.session.active_sketch.unwrap();
+    assert!(!crate::forms::finish_is_next(&h.app));
+    h.app.run("sketch.circle.center", json!({"center": [10, 10], "radius": 5})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    let body = h.app.session.model.state().bodies[0].name.clone();
+    assert!(crate::objects::edit_object_sketch(&mut h.app, &body, None));
+    h.frames(2);
+    assert_eq!(h.app.session.active_sketch, Some(base));
+    assert!(crate::forms::finish_is_next(&h.app));
+    finish(&mut h);
+    assert_eq!(h.app.session.active_sketch, Some(top), "Next opened the top");
+    // The top redrawn: a bigger circle; Finish rebuilds the blend from it.
+    let st = crate::open_meshing::session_world(&h.app.session);
+    let ids: Vec<String> = st.sketch(top).unwrap().sketch.curves.iter().map(|c| c.id.clone()).collect();
+    drop(st);
+    h.app.run("sketch.delete", json!({"entities": ids})).unwrap();
+    h.app.run("sketch.circle.center", json!({"center": [10, 10], "radius": 8})).unwrap();
+    finish(&mut h);
+    assert!(h.app.session.active_sketch.is_none(), "{:?}", h.app.status);
+    assert!(h.app.forms.chain.is_none());
+    let f = h.app.session.doc.features.iter().find(|f| matches!(f.kind, FeatureKind::Loft { .. })).map(|f| f.id).unwrap();
+    assert!(h.app.session.model.result(f).and_then(|r| r.error.clone()).is_none(), "the blend follows its new top");
+}
+
+/// A reference plane's line can be changed until Finish: it is not made on the first line.
+#[test]
+fn a_reference_plane_waits_for_finish() {
+    let mut h = Harness::new();
+    h.app.start("workplane.reference");
+    h.frames(5);
+    let sk = h.app.session.active_sketch.expect("a sketch");
+    h.app.run("sketch.line", json!({"points": [[0, 0], [10, 0]]})).unwrap();
+    h.frames(5);
+    assert_eq!(h.app.session.active_sketch, Some(sk), "still open after the line");
+    finish(&mut h);
+    assert!(h.app.session.active_sketch.is_none());
+    assert!(solidcraft_engine::view::construction_planes(&h.app.session).iter().any(|(_, n, _)| crate::reference_planes::is_reference(n)));
 }
 
 #[test]
