@@ -252,6 +252,10 @@ pub fn line_cross(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
 /// A number typed by the user ("12.5", "-3", "1/4", "2*3").
 pub fn number(t: &str) -> Option<f64> {
     let t = t.trim();
+    // A formula: `=` then numbers with + - * / and brackets.
+    if let Some(f) = t.strip_prefix('=') {
+        return formula(f);
+    }
     if let Some((a, b)) = t.split_once('/') {
         let (a, b) = (number(a)?, number(b)?);
         return (b != 0.0).then(|| a / b).filter(|v| v.is_finite());
@@ -260,6 +264,81 @@ pub fn number(t: &str) -> Option<f64> {
         return Some(number(a)? * number(b)?).filter(|v| v.is_finite());
     }
     t.replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// A formula's value: numbers (`.` or `,` decimals), + - * /, unary minus, brackets. None for
+/// anything else, a division by zero, or a formula past 200 characters or 32 brackets deep.
+pub fn formula(text: &str) -> Option<f64> {
+    if text.len() > 200 {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut at = 0usize;
+    let v = sum(&chars, &mut at, 0)?;
+    (at == chars.len() && v.is_finite()).then_some(v)
+}
+
+fn sum(c: &[char], at: &mut usize, depth: usize) -> Option<f64> {
+    let mut v = product(c, at, depth)?;
+    while let Some(&op) = c.get(*at) {
+        if op != '+' && op != '-' {
+            break;
+        }
+        *at += 1;
+        let r = product(c, at, depth)?;
+        v = if op == '+' { v + r } else { v - r };
+    }
+    Some(v)
+}
+
+fn product(c: &[char], at: &mut usize, depth: usize) -> Option<f64> {
+    let mut v = factor(c, at, depth)?;
+    while let Some(&op) = c.get(*at) {
+        if op != '*' && op != '/' {
+            break;
+        }
+        *at += 1;
+        let r = factor(c, at, depth)?;
+        if op == '/' {
+            if r == 0.0 {
+                return None;
+            }
+            v /= r;
+        } else {
+            v *= r;
+        }
+    }
+    Some(v)
+}
+
+fn factor(c: &[char], at: &mut usize, depth: usize) -> Option<f64> {
+    if depth > 32 {
+        return None;
+    }
+    match c.get(*at)? {
+        '-' => {
+            *at += 1;
+            Some(-factor(c, at, depth + 1)?)
+        }
+        '+' => {
+            *at += 1;
+            factor(c, at, depth + 1)
+        }
+        '(' => {
+            *at += 1;
+            let v = sum(c, at, depth + 1)?;
+            (c.get(*at) == Some(&')')).then(|| *at += 1)?;
+            Some(v)
+        }
+        _ => {
+            let start = *at;
+            while c.get(*at).is_some_and(|d| d.is_ascii_digit() || *d == '.' || *d == ',') {
+                *at += 1;
+            }
+            let s: String = c.get(start..*at)?.iter().collect();
+            s.replace(',', ".").parse::<f64>().ok()
+        }
+    }
 }
 
 pub fn fmt(v: f64) -> String {

@@ -3044,6 +3044,7 @@ impl SolveApp {
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
         self.synthetic_input(raw);
+        cad::take_tabs(self, raw);
         issue_report::hold_input(self, raw);
     }
 

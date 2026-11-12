@@ -93,6 +93,59 @@ pub fn edit_object_sketch(app: &mut SolveApp, body: &str, which: Option<u64>) ->
     crate::forms::edit_chain(app, body, feature, which)
 }
 
+/// The objects a joined object is made of: (the object's name before the join, the feature
+/// that made it), in the order they were made; one entry for an object that was never joined.
+pub fn join_members(app: &SolveApp, body: &str) -> Vec<(String, u64)> {
+    let doc = &app.session.doc;
+    // The joins into each name, followed back through joins of joins.
+    let mut names: Vec<String> = vec![body.to_string()];
+    let mut i = 0;
+    while let Some(name) = names.get(i).cloned() {
+        i += 1;
+        if names.len() > 500 {
+            break;
+        }
+        for f in &doc.features {
+            if let FeatureKind::Combine { target, tools, operation: Operation::Join, .. } = &f.kind
+                && target.0 == name
+            {
+                for t in tools {
+                    if !names.contains(&t.0) {
+                        names.push(t.0.clone());
+                    }
+                }
+            }
+        }
+    }
+    let maker = |name: &str| {
+        doc.features
+            .iter()
+            .find(|f| {
+                matches!(f.kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. } | FeatureKind::Loft { .. } | FeatureKind::Sweep { .. })
+                    && (f.body_names.iter().any(|n| n == name) || f.name == name)
+            })
+            .map(|f| f.id)
+    };
+    let mut out: Vec<(String, u64)> = names.into_iter().filter_map(|n| maker(&n).map(|id| (n, id))).collect();
+    out.sort_by_key(|(_, id)| doc.features.iter().position(|f| f.id == *id).unwrap_or(usize::MAX));
+    out
+}
+
+/// Edit one object of a joined object again (its row in the browser): its sketches open in
+/// turn, and the joined object follows; nothing is unjoined.
+pub fn edit_member(app: &mut SolveApp, name: &str, feature: u64) -> bool {
+    if app.session.active_sketch.is_some() {
+        app.finish_sketch();
+        if app.session.active_sketch.is_some() {
+            return false;
+        }
+    }
+    if app.session.doc.feature(feature).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. })) {
+        let _ = app.run("timeline.set_profiles", json!({"feature": feature, "profiles": "all"}));
+    }
+    crate::forms::edit_chain(app, name, feature, None)
+}
+
 /// Unjoin: the last join that made the selected object goes, giving its objects back.
 fn unjoin(app: &mut SolveApp) {
     let names: Vec<String> = app

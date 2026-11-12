@@ -498,11 +498,12 @@ fn work_plane_ref(app: &SolveApp) -> Option<(Value, Vec3)> {
             let plane = crate::viewport::named_plane(app, &name)?;
             Some((json!(name), plane.normal()))
         }
-        // A face is taken where it is now, as a plane of its own: the form never depends on the
-        // body it was drawn on (editing or deleting that body leaves the form as it is).
-        Sel::Face { .. } => {
+        // A face stays the form's support: when the body under it changes and the face moves,
+        // the form moves with it (it never joins that body: forms are new bodies).
+        sel @ Sel::Face { .. } => {
             let plane = work_plane_world(app)?;
-            Some((plane_json(&plane), plane.normal()))
+            let anchored = crate::sketch_attachment_ui::face_plane(app, &sel).unwrap_or_else(|| plane_json(&plane));
+            Some((anchored, plane.normal()))
         }
         _ => None,
     }
@@ -512,9 +513,10 @@ fn work_plane_ref(app: &SolveApp) -> Option<(Value, Vec3)> {
 /// projected into it: only what is drawn is the user's.
 fn open_on(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     let Sel::Face { point, .. } = sel else { return crate::dialogs::start_sketch(app, sel) };
-    // Where the face is now, as a plane of its own: the form does not hang on the body under it.
+    // On the face itself, so the form follows it when the body under it changes.
     let plane = work_plane_world(app).ok_or("the face no longer exists")?;
-    let params = json!({"plane": plane_json(&plane), "project_edges": false});
+    let anchored = crate::sketch_attachment_ui::face_plane(app, sel).unwrap_or_else(|| plane_json(&plane));
+    let params = json!({"plane": anchored, "project_edges": false});
     let before = app.settled_cam();
     app.run("sketch.create", params).map_err(|e| crate::friendly_error("sketch.create", &e))?;
     if app.look_at_opened_sketch(before)
@@ -673,7 +675,8 @@ fn open_stage(app: &mut SolveApp, mut chain: Chain, index: usize) -> Result<(), 
         status(app, format!("{}: draw a new axis line (or keep the centerline), then Finish", chain.body), false);
     } else {
         let what = if index + 1 < chain.stages.len() { "Next" } else { "Finish" };
-        status(app, format!("{}: change the {} sketch, then {what}", chain.body, label.to_lowercase()), false);
+        let part = if label == "Sketch" { "sketch".to_string() } else { format!("{} sketch", label.to_lowercase()) };
+        status(app, format!("{}: change the {part}, then {what}", chain.body), false);
     }
     app.forms.chain = Some(chain);
     app.ui.tab = "SKETCH".into();

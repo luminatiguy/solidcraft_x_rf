@@ -245,6 +245,8 @@ pub struct State {
     world: Option<solidcore_record::Vec3>,
     /// The work plane the running object tool picks its points on, fixed when it starts.
     pub(crate) plane: Option<Plane>,
+    /// Tab presses taken from the frame's input while a tool runs (`take_tabs`).
+    pub(crate) tabs: usize,
 }
 
 /// What each tool does, for its tooltip (CADCraft's descriptions).
@@ -630,6 +632,23 @@ pub fn dyn_entry(s: &Settings, prompt: &Prompt, typed: &str) -> Option<DynEntry>
     Some(DynEntry { polar, first: first.to_string(), second: second.to_string(), first_locked: locked, origin, relative, sides })
 }
 
+/// Before the frame: while a drawing tool runs, Tab belongs to its value boxes, so it never moves
+/// the keyboard focus to a panel's widgets (whose typing then went nowhere).
+pub fn take_tabs(app: &mut SolveApp, raw: &mut egui::RawInput) {
+    if app.cad.run.is_none() || (app.session.active_sketch.is_none() && !app.cad.objects) {
+        return;
+    }
+    raw.events.retain(|e| match e {
+        egui::Event::Key { key: egui::Key::Tab, pressed, modifiers, .. } if modifiers.is_none() => {
+            if *pressed {
+                app.cad.tabs += 1;
+            }
+            false
+        }
+        _ => true,
+    });
+}
+
 /// Tab at a point prompt: lock the first box (typing the separator, or the live value and the
 /// separator when nothing is typed) and move to the second.
 fn dyn_tab(app: &mut SolveApp) {
@@ -741,7 +760,11 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         if f10 && s.polar {
             s.ortho = false;
         }
-        if app.cad.run.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+    }
+    // Tab moves between the tool's value boxes only (taken before egui moves the focus).
+    let tabs = std::mem::take(&mut app.cad.tabs);
+    if app.cad.run.is_some() {
+        for _ in 0..tabs.min(4) {
             dyn_tab(app);
         }
     }
@@ -749,7 +772,7 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         let mut submit = false;
         ctx.input_mut(|i| {
             i.events.retain(|e| match e {
-                egui::Event::Text(t) if t.chars().all(|c| c.is_ascii_digit() || ".,-+@<*/#".contains(c)) => {
+                egui::Event::Text(t) if t.chars().all(|c| c.is_ascii_digit() || ".,-+@<*/#=()".contains(c)) => {
                     run.typed.push_str(t);
                     false
                 }

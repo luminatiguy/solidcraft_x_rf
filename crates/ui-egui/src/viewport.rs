@@ -5673,6 +5673,22 @@ fn quick_measure_readout(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) -> O
 }
 
 /// A single visual pattern for ongoing work, the existing six-second status, the 3D mouse
+/// The rects of the windows and panels shown last frame over `view` (not a full-screen layer).
+fn open_windows(ctx: &egui::Context, view: Rect) -> Vec<Rect> {
+    ctx.memory(|m| {
+        let areas = m.areas();
+        let mut out: Vec<Rect> = areas
+            .visible_layer_ids()
+            .into_iter()
+            .filter(|l| matches!(l.order, egui::Order::Middle | egui::Order::Foreground))
+            .filter_map(|l| m.area_rect(l.id))
+            .filter(|r| r.is_finite() && r.is_positive() && r.intersects(view) && r.area() < view.area() * 0.7)
+            .collect();
+        out.truncate(64);
+        out
+    })
+}
+
 /// calibration offer and the stand-up note, stacked from the bottom of the free view. Returns the toasts' rects.
 pub(crate) fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect, readout: Option<Rect>) -> Vec<Rect> {
     let placement_hint =
@@ -5696,6 +5712,9 @@ pub(crate) fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Re
     }
     obstacles.extend(readout);
     let view = crate::shell::content_rect(app, viewport);
+    // Every window and panel shown last frame too (Properties floating, Drafting Settings, a
+    // feature's window): a toast finds room beside them, never under or over one.
+    obstacles.extend(open_windows(ui.ctx(), view));
     let mut free = crate::viewport_layout::free_rect(view, &obstacles).shrink(t.space_8);
     if ToastPlace::current(ui.ctx()) == ToastPlace::Corner {
         free = corner_free(view, &obstacles);

@@ -2492,11 +2492,13 @@ impl Entry {
         } else {
             ("body", "ui.body_kind_solid")
         };
+        // A joined object opens as a folder of the objects it is made of.
+        let joined = crate::objects::join_members(app, &b.name).len() > 1;
         Self {
             thing: Thing::Body(world.clone()),
             key: b.name.clone(),
             row_key: format!("b:{world}"),
-            patterns: None,
+            patterns: joined.then(|| format!("b:{world}/members")),
             // A part the modelling kernel refuses says so (Repair Part is in its menu).
             label: if b.body.smlib_refused().is_some() { crate::i18n::format("browser.needs_repair", &[("name", &b.name)]) } else { b.name.clone() },
             icon,
@@ -3027,6 +3029,36 @@ fn inline_rename(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect, label_left: f
 }
 
 /// One item row of a folder.
+/// A joined object's own objects: a click lights the joined object, a double click edits that
+/// object's sketches (the joined object follows), as a body's double click does.
+fn member_rows(app: &mut SolveApp, ui: &mut egui::Ui, body: &str, depth: usize, acts: &mut Actions) {
+    let members = crate::objects::join_members(app, body);
+    let mut edit = None;
+    for (i, (name, feature)) in members.iter().enumerate() {
+        let icon = app.session.doc.feature(*feature).map_or("body", |f| crate::timeline::icon_of(&f.kind));
+        let editing = app.forms.chain.as_ref().is_some_and(|c| c.feature == *feature);
+        let r = draw_row(
+            ui,
+            ui.id().with(("member", body, i)),
+            &Row { depth, icon, label: name, name: true, selected: editing, tip: Some("Double-click to edit its sketches"), ..Default::default() },
+        );
+        if let Some(rect) = r.rect {
+            crate::scenario::publish_target(&format!("browser:member:{name}"), rect);
+        }
+        if r.hovered {
+            acts.hover(std::iter::once(&body.to_string()));
+        }
+        if r.double {
+            edit = Some((name.clone(), *feature));
+        } else if r.clicked {
+            let _ = app.run("select.set", json!({ "items": [{"type": "body", "name": body}] }));
+        }
+    }
+    if let Some((name, feature)) = edit {
+        crate::objects::edit_member(app, &name, feature);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn entry_row(
     app: &mut SolveApp,
@@ -3048,7 +3080,8 @@ fn entry_row(
     }
     app.tree.remember(&e.row_key);
     let pattern_key = e.patterns.as_deref();
-    let patterns_open = pattern_key.is_some_and(|key| is_open(app, key, true));
+    // A joined object's folder starts closed; a sketch's patterns open.
+    let patterns_open = pattern_key.is_some_and(|key| is_open(app, key, folder != "bodies"));
     let rect = row_rect(ui);
     let revealed = folder == "bodies" && body_reveal(app).is_some_and(|b| e.row_key.strip_prefix("b:") == Some(b));
     if !ui.is_rect_visible(rect) && !patterns_open && !revealed {
@@ -3105,7 +3138,7 @@ fn entry_row(
     if r.fold
         && let Some(key) = pattern_key
     {
-        toggle(app, key, true);
+        toggle(app, key, folder != "bodies");
     }
     if folder == "bodies"
         && body_reveal(app).is_some_and(|b| e.row_key.strip_prefix("b:") == Some(b))
@@ -3173,6 +3206,9 @@ fn entry_row(
             let _ = app.run("select.set", json!({ "items": [s] }));
         }
         acts.menu = Some((p, t));
+    }
+    if patterns_open && folder == "bodies" {
+        member_rows(app, ui, &e.key, depth + 1, acts);
     }
     if patterns_open && let Some(Sel::Feature { id }) = &e.sel {
         crate::sketch_pattern_tree::rows(app, ui, *id, depth + 1, "browser", path.map(|path| (comp, path)), !visible || parent_hidden);

@@ -465,7 +465,43 @@ fn a_form_on_another_bodys_face_stays_its_own_body() {
     assert_eq!(bodies(&h), 2, "{:?}", h.app.session.log.last());
     // The first body edited again: the second neither moves nor joins it.
     let first = h.app.session.doc.features.iter().find(|f| matches!(f.kind, FeatureKind::Extrude { .. })).map(|f| f.id).unwrap();
+    let top_z = |h: &Harness| {
+        let st = h.app.session.model.state();
+        let b = st.bodies.iter().find(|b| b.name == "Extrusion 2").unwrap();
+        let (m, place) = b.mesh_in_place();
+        m.positions.iter().map(|p| solidcraft_engine::doc::apply_point(&place, *p).z).fold(f64::NEG_INFINITY, f64::max)
+    };
+    let before = top_z(&h);
     h.app.run("timeline.redefine", json!({"feature": first, "command": "solid.extrude", "params": {"distance": "25 mm"}})).unwrap();
     h.frames(5);
     assert_eq!(bodies(&h), 2, "{:?}", h.app.session.log.last());
+    // The second stands on the first's top face: it rose with it.
+    assert!((top_z(&h) - before - 15.0).abs() < 1e-6, "{} → {}", before, top_z(&h));
+}
+
+/// A joined object lists the objects it is made of, and each one is edited again without
+/// unjoining: its sketch opens, Finish rebuilds the joined object.
+#[test]
+fn a_joined_object_lists_and_edits_its_objects() {
+    let mut h = Harness::new();
+    start(&mut h, "form.extrusion");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 20]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    start(&mut h, "form.extrusion");
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [10, 10], "p1": [30, 30]})).unwrap();
+    finish(&mut h);
+    ok(&mut h);
+    h.app.run("solid.combine", json!({"target": "Extrusion 1", "tools": ["Extrusion 2"], "operation": "join"})).unwrap();
+    h.frames(3);
+    assert_eq!(bodies(&h), 1);
+    let members = crate::objects::join_members(&h.app, "Extrusion 1");
+    assert_eq!(members.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["Extrusion 1", "Extrusion 2"]);
+    let (name, feature) = members[1].clone();
+    assert!(crate::objects::edit_member(&mut h.app, &name, feature));
+    h.frames(2);
+    assert!(h.app.session.active_sketch.is_some(), "Extrusion 2's sketch is open");
+    finish(&mut h);
+    assert!(h.app.session.active_sketch.is_none(), "{:?}", h.app.status);
+    assert_eq!(bodies(&h), 1, "still one joined object");
 }

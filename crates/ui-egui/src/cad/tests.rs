@@ -514,3 +514,30 @@ fn object_move_takes_reference_planes_too() {
     assert!((pl.origin.y - 5.0).abs() < 1e-6, "the plane moved 5 along Y: {pl:?}");
     assert!((min_y(&h) - before - 5.0).abs() < 1e-6, "the body moved too: {} from {before}", min_y(&h));
 }
+
+/// A value typed as a formula: `=` then + - * / and brackets.
+#[test]
+fn values_take_formulas() {
+    use super::geo::number;
+    assert_eq!(number("=10+2*3"), Some(16.0));
+    assert_eq!(number("=(1+2)/3"), Some(1.0));
+    assert_eq!(number("=-4*-2.5"), Some(10.0));
+    assert_eq!(number("=100/4-5"), Some(20.0));
+    assert_eq!(number("=5/0"), None);
+    assert_eq!(number("=2+"), None);
+    assert_eq!(number(&format!("={}", "(".repeat(100))), None);
+}
+
+/// Tab while a tool runs is the value boxes' (taken from the frame's input before egui moves the
+/// keyboard focus to a panel's widgets).
+#[test]
+fn tab_belongs_to_the_value_boxes() {
+    let mut h = sketching();
+    feed(&mut h.app, Input::Enter);
+    tool(&mut h, "cad.line");
+    let mut raw = egui::RawInput::default();
+    raw.events.push(egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    super::take_tabs(&mut h.app, &mut raw);
+    assert!(raw.events.is_empty());
+    assert_eq!(h.app.cad.tabs, 1);
+}

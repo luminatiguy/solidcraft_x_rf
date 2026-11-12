@@ -347,6 +347,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 app.drawing_ws.scale = scale;
             });
             ui.add_space(6.0);
+            ui.separator();
             ui.label("Grid");
             let (mut rows, mut cols) = (app.drawing_ws.rows, app.drawing_ws.cols);
             ui.horizontal(|ui| {
@@ -370,34 +371,56 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 app.drawing_ws.cols = 2;
                 app.drawing_ws.cells = default_cells(4);
             }
-            ui.add_space(8.0);
+            ui.add_space(6.0);
+            ui.separator();
             ui.label("Views");
+            // A table: a line between the rows and between the columns (cell, view, style).
             let cols = app.drawing_ws.cols;
-            for i in 0..app.drawing_ws.cells.len() {
-                let Some(mut cell) = app.drawing_ws.cells.get(i).copied() else { continue };
-                ui.horizontal(|ui| {
-                    ui.label(format!("{}·{}", i / cols + 1, i % cols + 1));
-                    egui::ComboBox::from_id_salt(("drawing_view", i))
-                        .width(80.0)
-                        .height(360.0)
-                        .selected_text(VIEWS.get(cell.view).map_or("", |v| v.1))
-                        .show_ui(ui, |ui| {
-                            for (k, (_, label)) in VIEWS.iter().enumerate() {
-                                ui.selectable_value(&mut cell.view, k, *label);
-                            }
-                        });
-                    egui::ComboBox::from_id_salt(("drawing_style", i))
-                        .width(96.0)
-                        .selected_text(if cell.hidden_line { "Hidden line" } else { "Wireframe" })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut cell.hidden_line, false, "Wireframe");
-                            ui.selectable_value(&mut cell.hidden_line, true, "Hidden line");
-                        });
-                });
-                if let Some(c) = app.drawing_ws.cells.get_mut(i) {
-                    *c = cell;
+            let line = egui::Stroke::new(1.0, tk.border);
+            egui::Frame::new().stroke(line).corner_radius(tk.radius_sm).inner_margin(egui::Margin::symmetric(0, 2)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let header = |ui: &mut egui::Ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([34.0, 22.0], egui::Label::new(egui::RichText::new("Cell").small().strong()));
+                        ui.separator();
+                        ui.add_sized([86.0, 22.0], egui::Label::new(egui::RichText::new("View").small().strong()));
+                        ui.separator();
+                        ui.add_sized([100.0, 22.0], egui::Label::new(egui::RichText::new("Style").small().strong()));
+                    });
+                };
+                header(ui);
+                for i in 0..app.drawing_ws.cells.len() {
+                    let Some(mut cell) = app.drawing_ws.cells.get(i).copied() else { continue };
+                    let r = ui.available_rect_before_wrap();
+                    ui.painter().hline(r.x_range(), r.top(), line);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([34.0, 26.0], egui::Label::new(format!("{}·{}", i / cols + 1, i % cols + 1)));
+                        ui.separator();
+                        egui::ComboBox::from_id_salt(("drawing_view", i))
+                            .width(80.0)
+                            .height(360.0)
+                            .selected_text(VIEWS.get(cell.view).map_or("", |v| v.1))
+                            .show_ui(ui, |ui| {
+                                for (k, (_, label)) in VIEWS.iter().enumerate() {
+                                    ui.selectable_value(&mut cell.view, k, *label);
+                                }
+                            });
+                        ui.separator();
+                        egui::ComboBox::from_id_salt(("drawing_style", i))
+                            .width(96.0)
+                            .selected_text(if cell.hidden_line { "Hidden line" } else { "Wireframe" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut cell.hidden_line, false, "Wireframe");
+                                ui.selectable_value(&mut cell.hidden_line, true, "Hidden line");
+                            });
+                    });
+                    if let Some(c) = app.drawing_ws.cells.get_mut(i) {
+                        *c = cell;
+                    }
                 }
-            }
+            });
+            ui.add_space(6.0);
+            ui.separator();
             ui.add_space(12.0);
             if let Some(p) = &app.drawing_ws.preview {
                 ui.label(format!("Sheet {:.0}×{:.0} mm, scale {}", p.size.0, p.size.1, p.scale));
